@@ -1,0 +1,27 @@
+[project]
+name = "kinematic-decompose"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "quadrup1efish", email = "lty13313730458@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "agama>=1.0.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "pynbody>=2.4.1",
+    "pytest>=9.0.2",
+    "scikit-learn>=1.8.0",
+    "scipy>=1.17.1",
+    "setuptools>=82.0.1",
+]
+
+[project.scripts]
+kinematic-decompose = "kinematic_decompose:main"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
