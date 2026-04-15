@@ -232,7 +232,10 @@ def get_particle_field_name(field: str) -> str:
         'ElectronAbundance': 'ElectronAbundance',
         'BH_Mass': 'mass'
     }
-    return Mapping[field]
+    if field in Mapping:
+        return Mapping[field]
+    else:
+        return field
 
 """
 get_eps_mDM.py
