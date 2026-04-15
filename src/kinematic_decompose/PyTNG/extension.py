@@ -64,7 +64,7 @@ def _coldgas(self):
 """
 Some useful function -> r50, R50, z50, t50, Rvir, Vvir, Mvir, Tvir, Spin, AM
 """
-@lru_cache(maxsize=None) 
+
 def _r(self, weight='mass', percent=0.50):
     if len(self['r']) == 0: return np.nan
     r_filtered = self['r']
@@ -77,7 +77,18 @@ def _r(self, weight='mass', percent=0.50):
     r_idx = np.searchsorted(cum_mass, total_mass * percent)
     return SimArray(r_sorted[r_idx], units=self['pos'].units)
 
-@lru_cache(maxsize=None)
+def _r90(self, weight='mass', percent=0.90):
+    if len(self['r']) == 0: return np.nan
+    r_filtered = self['r']
+    w_filtered = self[weight]
+    sort_idx = np.argsort(r_filtered)
+    r_sorted = r_filtered[sort_idx]
+    w_sorted = w_filtered[sort_idx]
+    cum_mass = np.cumsum(w_sorted)
+    total_mass = cum_mass[-1]
+    r_idx = np.searchsorted(cum_mass, total_mass * percent)
+    return SimArray(r_sorted[r_idx], units=self['pos'].units)
+
 def _R(self, weight='mass', percent=0.50):
     if len(self['R']) == 0: return np.nan
     r_filtered = self['R']
@@ -90,7 +101,6 @@ def _R(self, weight='mass', percent=0.50):
     r_idx = np.searchsorted(cum_mass, total_mass * percent)
     return  SimArray(r_sorted[r_idx], units=self['pos'].units)
 
-@lru_cache(maxsize=None)
 def _z(self, weight='mass', percent=0.50):
     if len(self['z']) == 0: return np.nan
     z_filtered = self['z'].abs()
@@ -103,7 +113,6 @@ def _z(self, weight='mass', percent=0.50):
     z_idx = np.searchsorted(cum_mass, total_mass * percent)
     return  SimArray(z_sorted[z_idx], units=self['pos'].units)
 
-@lru_cache(maxsize=None)
 def _t(self, weight='mass', percent=0.50):
     if len(self['tform']) == 0: return np.nan
     t_filtered = self['tform']
@@ -116,72 +125,58 @@ def _t(self, weight='mass', percent=0.50):
     t_idx = np.searchsorted(cum_mass, total_mass * percent)
     return SimArray(t_sorted[t_idx], units=self['tform'].units)
 
-@lru_cache(maxsize=None)
 def _vel_disp(self):
     if len(self['r']) == 0: return np.nan 
     return SimArray(np.linalg.norm(np.std(self['vel'][self['r']<self.r50], axis=0)), units=self['vel'].units)
 
-@lru_cache(maxsize=None)
-# TODO: Add radial vel_disp
 def _vr_disp(self):
     if len(self['r']) == 0: return np.nan 
     return SimArray(np.std(self['vr'][self['r']<self.r50], axis=0), units=self['vel'].units)
 
-@lru_cache(maxsize=None)
 def _vz_disp(self):
     if len(self['r']) == 0: return np.nan 
     return SimArray(np.std(self['vz'][self['r']<self.r50], axis=0), units=self['vel'].units)
 
-@lru_cache(maxsize=None) 
 def _vR_disp(self):
     if len(self['R']) == 0: return np.nan 
     return SimArray(np.std(self['vR'][self['R']<self.R50], axis=0), units=self['vel'].units)
 
-@lru_cache(maxsize=None) 
 def _ke(self):
     if len(self['r']) == 0: return np.nan 
     return SimArray((self['ke'][self['r']<self.r50]).mean(), units=self['ke'].units)
 
-@lru_cache(maxsize=None)
 def _mass_frac(self):
     sim = self.ancestor
     return self['mass'].sum()/sim.s['mass'].sum()
-
-@lru_cache(maxsize=None) 
+ 
 def _mdyn(self):
     if len(self['r']) == 0: return np.nan 
     sim = self.ancestor
     return sim['mass'][sim['r']<self.r50].sum()
 
-@lru_cache(maxsize=None)
 def _mcold(self):
     if len(self['r']) == 0: return np.nan 
     sim = self.ancestor
     return sim.coldgas['mass'][sim.coldgas['r']<self.r50].sum() + sim.colddisk['mass'][sim.colddisk['r']<self.r50].sum()
-
-@lru_cache(maxsize=None) 
+ 
 def _mbary(self):
     if len(self['r']) == 0: return np.nan 
     sim = self.ancestor
     return sim.s['mass'][sim.s['r']<self.r50].sum() + sim.g['mass'][sim.g['r']<self.r50].sum()
 
-@lru_cache(maxsize=None) 
 def _v_circ(self):
     if len(self['r']) == 0: return np.nan 
     sim = self.ancestor
     v_circ = (units.G*(sim['mass'][sim['r']<self.r50]).sum()/self.r50)**0.5#np.mean(self['vcxy'][self['r']<self.r50])
     return v_circ.in_units(self['vel'].units)
 
-@lru_cache(maxsize=None)
 def _v_rot(self):
     if len(self['r']) == 0: return np.nan 
     return np.mean(self['vcxy'][self['r']<self.r50])
 
-@lru_cache(maxsize=None)
 def _mvir(self):
     return self['mass'].sum()
 
-@lru_cache(maxsize=None)
 def _rvir(self):
     sim = self.ancestor
     overden = 200
@@ -190,12 +185,10 @@ def _rvir(self):
     rvir = (3 * mvir / (4 * np.pi * overden * rho_c))**(1/3)
     return rvir.in_units('kpc')
 
-@lru_cache(maxsize=None)
 def _vvir(self):
     vvir = np.sqrt(units.G * self.M_vir / self.R_vir)
     return vvir.in_units('km s**-1')
 
-@lru_cache(maxsize=None)
 def _Tvir(self):
     mu = 0.62
     mp = units.m_p
@@ -203,7 +196,6 @@ def _Tvir(self):
     T = mu * mp * self.V_vir**2 / (2 * kb)
     return T.in_units('K')
 
-#@lru_cache(maxsize=None)
 def _AM(self):
     angmom = (self['mass'][:, None] *
               np.cross(self['pos'], self['vel'])).sum(axis=0)
@@ -211,23 +203,19 @@ def _AM(self):
     result.units = self['mass'].units * self['pos'].units * self['vel'].units
     return result
 
-@lru_cache(maxsize=None)
 def _spin(self):
     sim = self.ancestor
     j = np.sqrt((self.AM**2).sum()) / self.M_vir
     return j / (np.sqrt(2) * sim.R_vir * sim.V_vir)
 
-@lru_cache(maxsize=None)
 def _krot(self):
     return (0.5 * self['mass'] * self['vcxy']**2).sum() / \
            (self['mass'] * self['ke']).sum()
 
-@lru_cache(maxsize=None) 
 def _beta(self):
     return 1 - (self['vt']**2 + self['vphi']**2).mean() / \
                (2 * self['vr']**2).mean()
 
-@lru_cache(maxsize=None) 
 def _tff(self):
     r_circ = self.r_circ
     mask = self['r'] < r_circ
@@ -236,11 +224,9 @@ def _tff(self):
     tff = np.sqrt(2) * r_circ / vc
     return tff.in_units('Gyr')
 
-@lru_cache(maxsize=None)
 def _rcirc(self):
     return (np.sqrt(2) * self.spin * self.r_vir).in_units('kpc')
 
-@lru_cache(maxsize=None)
 def _shape(self):
     pos  = self['pos']
     mass = self['mass']
