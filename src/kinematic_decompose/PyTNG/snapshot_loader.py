@@ -89,12 +89,7 @@ class Snapshot():
         self.container.properties = self.properties
     
     def load_particle(self, ID, groupType='Subhalo', load_particle_fields='default'):
-        if isinstance(load_particle_fields, str):
-            self._set_load_particle_fields(template=load_particle_fields)
-        elif isinstance(load_particle_fields, dict):
-            self.load_particle_fields = load_particle_fields
-            self.partTypes = list(load_particle_fields.keys())
-            
+        self._set_load_particle_fields(template=load_particle_fields) 
         self._create_container(ID, groupType)
         self._calculate_galaxy_index() 
         family_map = {
@@ -149,9 +144,10 @@ class Snapshot():
                     if family_snap[field_name].units != field_unit:
                         family_snap[field_name].units = field_unit
 
-        self.container.dm['mass'] = SimArray(
-                np.full(len(self.container.dm), self.container.properties['mDM']),
-                units=get_particle_field_unit('Masses'))
+        if 'dm' in self.partTypes:
+            self.container.dm['mass'] = SimArray(
+                    np.full(len(self.container.dm), self.container.properties['mDM']),
+                    units=get_particle_field_unit('Masses'))
         return self.container
     
     def load_group_catalog(self, ID, groupType='Subhalo'):
@@ -228,33 +224,33 @@ class Snapshot():
                     if new_unit != v.units:
                         self.group_catalog[k].convert_units(new_unit)
 
-    def center(self, cen = None, vel_cen=None, return_cen=False, mode: str = 'ssc', cen_size='2 kpc' ,**kwargs) -> SimSnap:
+    def center(self, cen = None, vel_cen=None, with_velocity=True, return_cen=False, mode: str = 'ssc', cen_size='2 kpc' ,**kwargs) -> SimSnap:
         if cen is None:
-            pynbody.analysis.center(self.container, mode=mode, wrap=True, with_velocity=True, return_cen=False, cen_size="2 kpc")
+            pynbody.analysis.center(self.container, mode=mode, wrap=True, with_velocity=with_velocity, return_cen=False, cen_size="2 kpc")
             if return_cen:
                 print("Be cautious: have not solve this return_cen but not moving snapshot.")
             return self.container
         else:
             self.container.translate(-cen)
-            if vel_cen is None:
-                cen = self.container.star[filt.Sphere(cen_size)]
-                if len(cen) < 5:
-                    print("Insufficient particles around center to get velocity, \
-                    try to use SubhaloVel")
-                    if getattr(self, "group_catalog"):
-                        vcen = self.group_catalog['SubhaloVel']
-                        if vcen.units != self.container['vel'].units:
-                            raise ValueError("SubhaloVel units != Vel units, Please using GC_physical_units")
+            if with_velocity:
+                if vel_cen is None:
+                    cen = self.container.star[filt.Sphere(cen_size)]
+                    if len(cen) < 5:
+                        print("Insufficient particles around center to get velocity, \
+                        try to use SubhaloVel")
+                        if getattr(self, "group_catalog"):
+                            vcen = self.group_catalog['SubhaloVel']
+                            if vcen.units != self.container['vel'].units:
+                                raise ValueError("SubhaloVel units != Vel units, Please using GC_physical_units")
+                        else:
+                            raise ValueError("Insufficient particles around center to get velocity and \
+                                            do not find SubhaloVel.")
                     else:
-                        raise ValueError("Insufficient particles around center to get velocity and \
-                                        do not find SubhaloVel.")
+                        vcen = (cen['vel'].transpose() * cen['mass']).sum(axis=1) / cen['mass'].sum()
+                        vcen.units = cen['vel'].units
+                    self.container.offset_velocity(-vcen)
                 else:
-                    vcen = (cen['vel'].transpose() * cen['mass']).sum(axis=1) / cen['mass'].sum()
-                    vcen.units = cen['vel'].units
-                self.container.offset_velocity(-vcen)
-            else:
-                self.container.offset_velocity(-vel_cen)
-
+                    self.container.offset_velocity(-vel_cen)
             if return_cen:
                 return self.container, cen, vel_cen
             else:
@@ -414,22 +410,25 @@ class Snapshot():
         ]
     
     def _set_load_particle_fields(self, template='default'):
-        if template == 'default':
-            field = {}
-            field['star'] = ['Coordinates', 'Velocities', 'Masses']
-            field['gas']  = ['Coordinates', 'Velocities', 'Masses']
-            field['dm']   = ['Coordinates', 'Velocities', 'Masses']
-        elif template == 'potential':
-            field = {}
-            field['star'] = ['Coordinates', 'Masses']
-            field['gas']  = ['Coordinates', 'Masses']
-            field['dm']   = ['Coordinates', 'Masses']
-        else:
-            print("Not include this template, using default.")
-            field = {}
-            field['star'] = ['Coordinates', 'Velocities', 'Masses']
-            field['gas']  = ['Coordinates', 'Velocities', 'Masses']
-            field['dm']   = ['Coordinates', 'Velocities', 'Masses']
+        if isinstance(template, str):
+            if template == 'default':
+                field = {}
+                field['star'] = ['Coordinates', 'Velocities', 'Masses']
+                field['gas']  = ['Coordinates', 'Velocities', 'Masses']
+                field['dm']   = ['Coordinates', 'Velocities', 'Masses']
+            elif template == 'potential':
+                field = {}
+                field['star'] = ['Coordinates', 'Velocities', 'Masses']
+                field['gas']  = ['Coordinates', 'Masses']
+                field['dm']   = ['Coordinates', 'Masses']
+            else:
+                print("Not include this template, using default.")
+                field = {}
+                field['star'] = ['Coordinates', 'Velocities', 'Masses']
+                field['gas']  = ['Coordinates', 'Velocities', 'Masses']
+                field['dm']   = ['Coordinates', 'Velocities', 'Masses']
+        elif isinstance(template, dict):
+            field = template
         self.load_particle_fields = field
         self.partTypes = list(field.keys())
     
