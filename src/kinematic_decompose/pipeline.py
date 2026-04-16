@@ -15,14 +15,15 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
     jzojc_index = 1
     jpojc_index = 2
     X = np.column_stack([galaxy.s['eoemin'], galaxy.s['jzojc'], galaxy.s['jpojc']])
-
+    keep_particle = (galaxy.s['eoemin']<0)&(np.abs(galaxy.s['jzojc'])<1.5)&(galaxy.s['jpojc']<1.5)
     eps   = galaxy.properties.get('eps', 0.5)
     r_min = 2*eps
     r_max = min(1.1*galaxy.s.r90, 10)
     step  = 0.5*eps
-    eoemin_cut =  util.get_energy_criterion(pot, galaxy.s['r'], galaxy.s['eoemin'], r_min, r_max, step, cut_ratio='auto')
+    eoemin_cut =  util.get_energy_criterion(pot, galaxy.s['r'][keep_particle], galaxy.s['eoemin'][keep_particle],
+                                            r_min, r_max, step, cut_ratio='auto')
     scaler = preprocessing.RobustScaler()
-    X_train= scaler.fit_transform(X)
+    X_train= scaler.fit_transform(X[keep_particle])
 
     eoemin_cut_train = scaler.transform(eoemin_cut, columns=eoemin_index)
     jzojc_cut_train = scaler.transform(jzojc_cut, columns=jzojc_index)
@@ -33,7 +34,7 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
                             eoemin_cut=eoemin_cut_train, 
                             jzojc_cut=jzojc_cut_train,
                             r_jzojc_cut = r_jzojc_cut_train, 
-                            sample_weight=galaxy.s['mass'],
+                            sample_weight=galaxy.s['mass'][keep_particle],
                             max_iter=200, 
                             min_iter=50)
 
@@ -88,10 +89,11 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
             pickle.dump(mixture_model_output, f)
     if image_path is not None:
         visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True, ranges=None)
-        plt.savefig(Path(image_path)/f"{subID}.pdf", dpi=300)
+        plt.savefig(Path(image_path)/f"{subID}.png", dpi=300)
     if structure_properties_output_path is not None:
         structure_properties_output = util.save_structure_properties(galaxy)
         with open(f"{structure_properties_output_path}/structure_properties_{run}_{snapNum}_{subID}.pkl", "wb") as f:
             pickle.dump(structure_properties_output, f)
     return model, galaxy, eoemin_cut, jzojc_cut
+
  
