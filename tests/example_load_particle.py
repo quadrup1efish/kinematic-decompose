@@ -1,11 +1,8 @@
-import sys
 import pynbody
 import numpy as np
 import matplotlib.pyplot as plt
 
-from kinematic_decompose.mixture import AutoGMM
 from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
-from kinematic_decompose.gravity.kinematic_solver import calculate_kinematic_param
 
 run = 'TNG100-3' 
 basePath = f"/Users/yuwa/sims.TNG/{run}/output"

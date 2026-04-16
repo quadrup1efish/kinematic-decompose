@@ -10,22 +10,22 @@ class RobustScaler():
         self.scale_  = np.abs(np.subtract(*np.percentile(X, self.quantile_range, axis=0)))
         return self
     
-    def transform(self, X):        
-        X -= self.center_
-        X /= self.scale_
-        return X
+    def transform(self, X, columns=None):
+        if columns is None:
+            return (X - self.center_) / self.scale_
+        else:
+            return (X - self.center_[columns]) / self.scale_[columns]
     
     def fit_transform(self, X):
         self.center_ = np.nanmedian(X, axis=0)
         self.scale_  = np.abs(np.subtract(*np.percentile(X, self.quantile_range, axis=0)))
-        X -= self.center_
-        X /= self.scale_
-        return X
+        return (X - self.center_) / self.scale_
     
-    def inverse_transform(self, X):
-        X *= self.scale_
-        X += self.center_
-        return X
+    def inverse_transform(self, X, columns=None):
+        if columns is None:
+            return X * self.scale_ + self.center_
+        else:
+            return X * self.scale_[columns] + self.center_[columns]
     
     def inverse_transform_GMM(self, gmm):
         transformed_gmm = deepcopy(gmm)

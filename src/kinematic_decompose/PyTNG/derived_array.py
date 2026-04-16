@@ -9,7 +9,7 @@ def R(sim):
 
 @pynbody.derived_array
 def vR(sim):
-    return sim['vxy']
+    return sim['vrxy']
 
 @pynbody.derived_array
 def jp(sim):

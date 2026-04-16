@@ -265,6 +265,7 @@ def register():
 
     for cls in classes:
         cls.r50 = property(_r)
+        cls.r90 = property(_r90)
         cls.R50 = property(_R)
         cls.z50 = property(_z)
         cls.t50 = property(_t)

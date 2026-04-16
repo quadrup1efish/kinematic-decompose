@@ -3,68 +3,141 @@ from scipy.ndimage import label
 
 from .util import *
 from ._gaussian_mixture import GaussianMixture as GM
-from .preprocessing import RobustScaler
 
+def hist_bin_fd(x):
+    iqr = np.subtract(*np.percentile(x, [75, 25]))
+    return 2.0 * iqr * x.size ** (-1.0 / 3.0)
 
+MIN_MAHAL = 0.5
 MIN_WEIGHT = 0.01
 MAX_N_COMPONENTS = 15
 MIN_POINTS = 10
 CBIC = -0.1
 BF = 0.95
 
-class AutoGMM():
-    def __init__(self, galaxy, n_components=None, model=None, morphology_type=None, dim=None):
-        self.galaxy = galaxy
+class AutoGaussianMixtureModel:
+    def __init__(self, n_components=None, model=None, dim=None, morphology_type=None):
         self.n_components = n_components
         self.morphology_type = morphology_type
-        self.ecut = None
-        self.etacut=0.5
-        self.X_full = np.column_stack((galaxy.s['eoemin'],galaxy.s['jzojc'],galaxy.s['jpojc'])).astype(np.float32, copy=False)
-        del galaxy.ancestor['eoemin'], galaxy.ancestor['jzojc'], galaxy.ancestor['jpojc']
-        if dim == 2:
-            self.X = self.X_full[:, :2]
-        else:
-            self.X = self.X_full
-        self.remove_particles = (self.X_full[:,0]<0)&(np.abs(self.X_full[:,1])<1.5)&(self.X_full[:,2]<1.5)
-        self.X_clean= self.X[self.remove_particles]
-        self.scaler = RobustScaler().fit(self.X_clean)
-        self.X_train= self.scaler.transform(self.X_clean)
 
-    def _morphology_class(self):
-        model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=200, min_iter=50, tol=1e-3).fit(self.X_train[:,[0,1]])
-        if np.max(model.means_[:,1]) > self._scale(0.5, self.X_clean[:,1]):
+    def _morphology_class(self, X, jzojc_cut):
+        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=200, min_iter=50, tol=1e-4).fit(X)
+        if np.max(self.morphology_model.means_[:,1]) > jzojc_cut:
             self.morphology_type='disk'
         else:
             self.morphology_type='spheroid'
-            model = GM(n_components=2, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-3).fit(self.X_train[:,[0,1]])
-            if self.X.shape[1] == 3:
-                self.X = self.X_full[:, :2]
-                self.X_train = self.X_train[:,[0,1]]
-        self.morphology_model = model
-        return model
+            self.morphology_model = GM(n_components=2, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-3).fit(X)
+        return self.morphology_model
     
-    def _scale(self, x, X):
-        x_scale = (x-np.nanmedian(X))/(np.nanpercentile(X,75)-np.nanpercentile(X,25))
-        return x_scale
+    def _initialize(self, X, model, eoemin_cut, jzojc_cut, r_jzojc_cut,  
+                    eoemin_index=0, jzojc_index=1, jpojc_index=2, disable_zero_rotation='halo', scaler=None):
+        if model is None and getattr('morphology_model'):
+            model = self.morphology_model
+            
+        old_weights = model.weights_
+        old_means = model.means_
+        old_covariances = model.covariances_
     
-    def _find_residual_component(self, X, model: GM):
+        labels = model.soft_predict(X)
+        spheroid_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & ((model.means_[:,jzojc_index] > r_jzojc_cut)))[0]
+        halo_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & 
+                            (model.means_[:,jzojc_index] > r_jzojc_cut) & 
+                            (model.means_[:,eoemin_index] > eoemin_cut))[0]
+        bulge_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & 
+                            (model.means_[:,jzojc_index] > r_jzojc_cut) & 
+                            (model.means_[:,eoemin_index] < eoemin_cut))[0]
+        
+        disk_labels = np.setdiff1d(np.unique(labels), spheroid_labels)
+        spheroid_X = X[np.isin(labels,spheroid_labels)]
+        bulge_X = spheroid_X[spheroid_X[:,eoemin_index]< eoemin_cut]
+        halo_X  = spheroid_X[(spheroid_X[:,eoemin_index]>=eoemin_cut) &
+                             ((spheroid_X[:,jzojc_index]<=jzojc_cut)) &
+                             ((spheroid_X[:,jzojc_index]>=r_jzojc_cut))]
+        
+        if disable_zero_rotation == 'halo' and scaler is not None:
+            halo_X_raw = scaler.inverse_transform(halo_X, columns=[eoemin_index, jzojc_index])
+            sph, _ = JEHistogram(halo_X_raw[:, eoemin_index], halo_X_raw[:, jzojc_index])
+            halo_X = halo_X[sph]
+            del halo_X_raw, sph
+                    
+        if (len(halo_labels) != 0 & len(bulge_labels) != 0):
+            halo_weight = model.weights_[halo_labels][0]
+            halo_mean   = model.means_[halo_labels][0]
+            halo_covariance  = model.covariances_[halo_labels][0]
+            
+            bulge_weight = model.weights_[bulge_labels][0]
+            bulge_mean   = model.means_[bulge_labels][0]
+            bulge_covariance = model.covariances_[bulge_labels][0]
+            #mahal_between = abs(halo_mean[0] - bulge_mean[0]) / np.sqrt((halo_covariance[0,0]**2 + bulge_covariance[0,0]**2)/2)
+            if bulge_weight > len(bulge_X)/len(X):
+                bulge_weight = len(bulge_X)/len(X)
+                bulge_mean   = np.mean(bulge_X, axis=0)
+                bulge_covariance = np.cov(bulge_X, rowvar=False)
+            
+            if halo_weight > len(halo_X)/len(X):
+                halo_weight  = len(halo_X)/len(X)
+                halo_mean    = np.mean(halo_X, axis=0)
+                halo_covariance  = np.cov(halo_X, rowvar=False)
+        else:
+            bulge_weight = len(bulge_X)/len(X)
+            bulge_mean   = np.mean(bulge_X, axis=0)
+            bulge_covariance = np.cov(bulge_X, rowvar=False)
+            
+            halo_weight  = len(halo_X)/len(X)
+            halo_mean    = np.mean(halo_X, axis=0)
+            halo_covariance  = np.cov(halo_X, rowvar=False)
+        
+        new_weights = old_weights[disk_labels].tolist()
+        new_means = old_means[disk_labels].tolist()
+        new_covariances = old_covariances[disk_labels].tolist()
+
+        new_weights.extend([bulge_weight, halo_weight])
+        new_means.extend([bulge_mean, halo_mean])
+        new_covariances.extend([bulge_covariance, halo_covariance])
+        
+        weights_init = np.array(new_weights)
+        weights_init/=weights_init.sum()
+        means_init = np.array(new_means)
+        covariances_init=np.array(new_covariances)
+        precisions_init  = np.linalg.pinv(covariances_init)
+
+        self.initial_model = GM(len(new_weights), 
+                                weights_init=weights_init, 
+                                means_init=means_init, 
+                                precisions_init=precisions_init, 
+                                max_iter=0,
+                                min_iter=0).fit(X)
+        
+        return self.initial_model
+    
+    def _find_residual_component(self, X, model: GM, 
+                                 eoemin_index=0, 
+                                 jzojc_index=1, 
+                                 jpojc_index=2):
         base_nc = model.n_components
         dim = X.shape[1]
         N = len(X)
 
         # ---------- 1. histogram ----------
-        wid0 = hist_bin_fd(X[:, 0])
-        wid1 = hist_bin_fd(X[:, 1])
+        eoemin = X[:, eoemin_index]
+        jzojc = X[:, jzojc_index]
 
-        bin_number0 = min(int(np.ptp(X[:, 0]) / wid0), 150)
-        bin_number1 = min(int(np.ptp(X[:, 1]) / wid1), 300)
+        wid0 = hist_bin_fd(eoemin)
+        wid1 = hist_bin_fd(jzojc)
+
+        bin_number0 = min(int(np.ptp(eoemin) / wid0), 150)
+        bin_number1 = min(int(np.ptp(jzojc) / wid1), 300)
+
+        x_range = [np.percentile(eoemin, 0.1), np.percentile(eoemin, 99.9)]
+        y_range = [np.percentile(jzojc, 0.1), np.percentile(jzojc, 99.9)]
 
         true_prob, x_edges, y_edges = np.histogram2d(
-            X[:, 0], X[:, 1],
+            eoemin, 
+            jzojc,
             bins=[bin_number0, bin_number1],
-            density=True, range=[[np.percentile(X[:, 0],0.1), np.percentile(X[:, 0],99.9)], [np.percentile(X[:, 1],0.1), np.percentile(X[:, 1],99.9)]]
+            density=True,
+            range=[x_range, y_range]
         )
-
         # ---------- 2. grid & model ----------
         x_centers = (x_edges[:-1] + x_edges[1:]) / 2
         y_centers = (y_edges[:-1] + y_edges[1:]) / 2
@@ -73,7 +146,7 @@ class AutoGMM():
         grid_points = np.column_stack([xx.ravel(order='C'), yy.ravel(order='C')])
 
         model_prob = np.exp(model.score_samples(grid_points)).reshape(xx.shape)
-
+        
         dx = x_edges[1] - x_edges[0]
         dy = y_edges[1] - y_edges[0]
         bin_area = dx * dy
@@ -82,19 +155,22 @@ class AutoGMM():
         model_count = model_prob * N * bin_area
 
         # ---------- 3. ΔL ----------
-        delta_L = true_count * np.log(true_count / model_count) - (true_count - model_count)
+        epsilon = 1
+        ratio = (true_count + epsilon) / (model_count + epsilon)
+        delta_L = true_count * np.log(ratio) - (true_count - model_count)
+        delta_L = np.clip(delta_L, 0, None)
         delta_L = np.nan_to_num(delta_L)
 
         # ---------- 4. threshold ----------
-        q1, q3 = np.percentile(delta_L, [25, 75])
+        delta_L_positive = delta_L[delta_L > 0]
+        q1, q3 = np.percentile(delta_L_positive, [25, 75])
         iqr = q3 - q1
         mask = delta_L > (q3 + 1.5 * iqr)
-
         labels, _ = label(mask)
 
         # ---------- 5. map data → region ----------
-        ix = np.digitize(X[:, 0], x_edges) - 1
-        iy = np.digitize(X[:, 1], y_edges) - 1
+        ix = np.digitize(eoemin, x_edges) - 1
+        iy = np.digitize(jzojc, y_edges) - 1
 
         valid = (
             (ix >= 0) & (ix < len(x_edges) - 1) &
@@ -105,7 +181,6 @@ class AutoGMM():
         point_labels[valid] = labels[ix[valid], iy[valid]]
         
         # ---------- 6. select valid regions ----------
-        total_delta_L = delta_L[mask].sum()
         k = 0.5*dim*(dim+1) + dim + 1
         penalty = k * np.log(len(X))
 
@@ -118,15 +193,27 @@ class AutoGMM():
         ]
 
         gains = np.asarray(gains)
-        sorted_idx = np.argsort(gains)[::-1][:MAX_N_COMPONENTS-base_nc]
+        sorted_idx = np.argsort(gains)[::-1]
         sorted_gains = gains[sorted_idx]
         sorted_labels = region_ids[sorted_idx]
-        valid_gains = sorted_gains[sorted_gains>0]
-        valid_labels= sorted_labels[sorted_gains>0]
-        cum_ratio = np.exp(np.cumsum(valid_gains) - np.sum(valid_gains))
-        n_selected = np.searchsorted(cum_ratio, BF, side='left')
-        n_selected = min(n_selected, len(valid_labels))
-        valid_labels = sorted_labels[:n_selected]
+
+        positive_mask = sorted_gains > 0
+        positive_gains = sorted_gains[positive_mask]
+        positive_labels = sorted_labels[positive_mask]
+
+        positive_gains = positive_gains[:MAX_N_COMPONENTS-base_nc]
+        positive_labels = positive_labels[:MAX_N_COMPONENTS-base_nc]
+        if len(positive_gains) > 0:
+            cum_ratio = np.exp(np.cumsum(positive_gains) - np.sum(positive_gains))
+            n_selected = np.searchsorted(cum_ratio, BF, side='right')
+            n_selected = min(n_selected, len(positive_labels))
+            q1, q3 = np.percentile(positive_gains, [25, 75])
+            iqr = q3 - q1
+            if n_selected==0 and positive_gains[0] > q3 + 1.5 * iqr:
+                n_selected = 1
+            selected_labels = positive_labels[:n_selected]
+        else:
+            selected_labels = np.array([], dtype=int)
 
         model_3d = self._dimensional_ascension(X, model)
         
@@ -134,8 +221,8 @@ class AutoGMM():
         means       = list(model_3d[1])
         covariances = list(model_3d[2])
         precisions  = list(model_3d[3])
-
-        for lbl in valid_labels:
+        
+        for lbl in selected_labels:
             pts = X[point_labels == lbl]
             weight = len(pts) / N
 
@@ -143,7 +230,17 @@ class AutoGMM():
                 continue
 
             mean = pts.mean(axis=0)
-
+            
+            too_close = False
+            for mu, prec in zip(means, precisions):
+                diff = mean - mu
+                mahal = np.sqrt(diff @ prec @ diff)
+                if mahal < MIN_MAHAL:
+                    too_close = True
+                    break
+            if too_close:
+                continue
+            
             cov = np.cov(pts, rowvar=False)
             cov += 1e-6 * np.eye(dim)
 
@@ -161,22 +258,35 @@ class AutoGMM():
         covariances = np.asarray(covariances)
         precisions  = np.asarray(precisions)
 
-        return delta_L, len(weights), weights, means, covariances, precisions
+        self.initial_model = GM(len(weights), 
+                                weights_init=weights, 
+                                means_init=means, 
+                                precisions_init=precisions, 
+                                max_iter=0,
+                                min_iter=0).fit(X)
+        return self.initial_model, delta_L
     
-    def fit(self, **kwargs): 
-        self.morphology_model = self._morphology_class()
-        _, nc, weights, means, covariances, precisions = self._find_residual_component(self.X_train, model=self.morphology_model)
+    def fit(self, X, eoemin_cut, jzojc_cut, r_jzojc_cut, initial_use=[0,1], sample_weight=None,  disable_zero_rotation='halo', scaler=None, **kwargs): 
+        self.morphology_model = self._morphology_class(X=X[:,initial_use], jzojc_cut=jzojc_cut)
+        self.initial_model = self._initialize(X[:,initial_use], self.morphology_model, 
+                                              eoemin_cut=eoemin_cut,
+                                              jzojc_cut=jzojc_cut,
+                                              r_jzojc_cut=r_jzojc_cut,
+                                              disable_zero_rotation=disable_zero_rotation,
+                                              scaler=scaler)
+        data_to_train = X[:,initial_use] if self.morphology_type == 'spheroid' else X
+        self.initial_model, delta_L = self._find_residual_component(data_to_train, model=self.initial_model)
         params = {
-            'n_components': nc,
-            'weights_init': weights,
-            'means_init': means,
-            'precisions_init': precisions,
+            'n_components': self.initial_model.n_components,
+            'weights_init': self.initial_model.weights_,
+            'means_init': self.initial_model.means_,
+            'precisions_init': self.initial_model.precisions_,
             'max_iter': 200,
             'min_iter': 50
         }
         params.update(kwargs)
-        self.best_train_model = GM(**params).fit(self.X_train)
-        self.best_model = self.scaler.inverse_transform_GMM(self.best_train_model)
+        self.best_model = GM(**params).fit(data_to_train, sample_weight)
+
         return self
     
     def _dimensional_ascension(self, X, model):
@@ -189,84 +299,13 @@ class AutoGMM():
 
         means_3d = np.zeros((K, dim))
         covariances_3d  = np.zeros((K, dim, dim))
-
+        labels = model.soft_predict(X[:, :2])
+        
         for k in range(K):
-            resp = model.predict_proba(X[:, :2])[:, k]
-            mask = resp > 0.5
+            mask = (labels == k)
             pts = X[mask]
             means_3d[k] = pts.mean(axis=0)
             covariances_3d[k] = np.cov(pts, rowvar=False) + 1e-6 * np.eye(dim)
-
+        means_3d[:,[0,1]] = model.means_
         precisions_3d = np.linalg.inv(covariances_3d)
         return weights, means_3d, covariances_3d, precisions_3d
-    
-    def decompose(self, pot=None):
-        # Predict labels and probabilities
-        labels = self.best_model.soft_predict(self.X)
-        prob = self.best_model.predict_proba(self.X)
-        
-        # Extract GMM parameters
-        weights, means, covariances = (
-            self.best_model.weights_,
-            self.best_model.means_,
-            self.best_model.covariances_
-        )
-        
-        # Set morphology threshold
-        self.etacut = 0.7 if self.morphology_type == 'spheroid' else self.etacut
-        self.ecut = get_energy_criterion(pot, self.galaxy)
-        # Define classification mapping
-        label_map = {}
-        for i, (ec, eta) in enumerate(means[:,0:2]):
-            if eta >= 0.85:
-                label_map[i] = 0  # cold disk
-            elif eta > self.etacut:
-                label_map[i] = 1  # warm disk
-            elif eta < -self.etacut:
-                label_map[i] = 4  # counter-rotating disk
-            elif eta <= self.etacut and ec < self.ecut:
-                label_map[i] = 2  # bulge
-            else:
-                label_map[i] = 3  # halo
-        
-        new_labels = np.vectorize(label_map.get)(labels)
-        new_prob = np.zeros((len(prob), 5), dtype=np.float32)
-        for old_idx, new_idx in label_map.items():
-            new_prob[:, new_idx] += prob[:, old_idx]
-        
-        # Store results in galaxy object
-        self.galaxy.s['label'] = new_labels
-        self.galaxy.s['prob'] = new_prob
-        
-        # Clean up and prepare GMM storage
-        self.X_full = self.X = None
-        del new_labels, labels, new_prob, prob
-        
-        # Build GMM dictionary with classifications
-        mask = means[:, 1] > self.etacut
-        GMM_dict = {
-            "total": {"weights": weights, "means": means, "covariances": covariances},
-            "disk": {"weights": weights[mask], 
-                     "means": means[mask], 
-                     "covariances": covariances[mask]},
-            "colddisk": {"weights": weights[means[:, 1] >= 0.85], 
-                         "means": means[means[:, 1] >= 0.85], 
-                        "covariances": covariances[means[:, 1] >= 0.85]},
-            "warmdisk": {"weights": weights[(means[:, 1] > self.etacut) & (means[:, 1] < 0.85)], 
-                        "means": means[(means[:, 1] > self.etacut) & (means[:, 1] < 0.85)], 
-                        "covariances": covariances[(means[:, 1] > self.etacut) & (means[:, 1] < 0.85)]},
-            "counter-rotate": {"weights": weights[means[:, 1] < -self.etacut], 
-                            "means": means[means[:, 1] < -self.etacut], 
-                            "covariances": covariances[means[:, 1] < -self.etacut]},
-            "spheroid": {"weights": weights[np.abs(means[:, 1]) <= self.etacut], 
-                        "means": means[np.abs(means[:, 1]) <= self.etacut], 
-                        "covariances": covariances[np.abs(means[:, 1]) <= self.etacut]},
-            "bulge": {"weights": weights[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] < self.ecut)], 
-                    "means": means[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] < self.ecut)], 
-                    "covariances": covariances[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] < self.ecut)]},
-            "halo": {"weights": weights[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] >= self.ecut)], 
-                    "means": means[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] >= self.ecut)], 
-                    "covariances": covariances[(np.abs(means[:, 1]) <= self.etacut) & (means[:, 0] >= self.ecut)]},
-            "ecut": self.ecut,
-        }
-        return self.galaxy, GMM_dict

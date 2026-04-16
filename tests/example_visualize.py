@@ -18,10 +18,3 @@ galaxy = snapshot.container
 
 pot = create_multipole_potential(galaxy['pos'], galaxy['mass'])
 galaxy = calculate_kinematic_param(galaxy, pot)
-auto_gmm = AutoGMM(galaxy)
-auto_gmm = auto_gmm.fit(max_iter=100)
-X = auto_gmm.X
-model = auto_gmm.best_model
-galaxy, gmm_dict = auto_gmm.decompose(pot)
-visualize_decomposition(X, auto_gmm, galaxy, ranges=None,threshold_line=True)
-plt.show()

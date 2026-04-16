@@ -494,11 +494,10 @@ mini_sample_weight = sample_weight[batch_idx]
         rng = xp.random.default_rng(seed)
         _, log_resp = self._e_step(X)
         resp = np.exp(log_resp)
-        probs = resp / (resp.sum(axis=1, keepdims=True))
+        probs = resp / resp.sum(axis=1, keepdims=True)
         cum_probs = xp.cumsum(probs, axis=1)
         rand_vals = rng.random(probs.shape[0])
-        rand_vals_expanded = rand_vals[:, np.newaxis]
-        labels = (cum_probs >= rand_vals_expanded).argmax(axis=1) 
+        labels = (cum_probs >= rand_vals[:, np.newaxis]).argmax(axis=1) 
         return labels
     
     def predict_proba(self, X):

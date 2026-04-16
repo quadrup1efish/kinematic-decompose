@@ -49,8 +49,9 @@ def gaussian_ell(ax, mean, covariance, color):
 
 def visualize_residual(X, means, covariances, extent):
     proj = [1,0]
-    vmin = np.nanpercentile(X, 1)
-    vmax = np.nanpercentile(X, 99)
+    X_positive = X[X > 0]
+    vmin = np.nanpercentile(X_positive, 1)
+    vmax = np.nanpercentile(X_positive, 99)
     plt.figure(figsize=(6,5))
     plt.imshow(X, cmap='bwr', 
                 extent=extent,
@@ -217,7 +218,7 @@ def visualize_phase_space(X, means=None, covariances=None, ecut=-0.75, etacut=0.
     cbar.set_label('$N_{*}$', fontsize=12)
     cbar.ax.tick_params(labelsize=12) 
     plt.tight_layout()
-    #plt.show()
+    return fig
 
 from scipy.stats import binned_statistic_2d
 
@@ -236,7 +237,7 @@ def plot_surface_density(ax, pos, mass, view='face', size=50, bins=500):
         pixel = (2*size)**2/bins**2
         stat= binned_statistic_2d(x=x,y=z,values=mass,statistic='sum',bins=bins,range=[range_val, range_val])[0]
     else:
-        vmin = 7
+        vmin = 6.5
         vmax = 10.5
         x,z = pos[:,0], pos[:,2]
         x_range = (-size, size) 
@@ -265,21 +266,21 @@ def plot_vlos(ax, pos, vel, mass, size=50, bins=500):
     vlos= binned_statistic_2d(x=x,y=z,values=(vel[:,1])/np.sqrt(vel[:,1]**2+3*np.var(vel[:,1])),statistic='mean',bins=bins, range=[x_range, y_range])[0]
     stat= binned_statistic_2d(x=x,y=z,values=mass,statistic='sum',bins=bins,range=[x_range, y_range])[0]
     density=np.log10(stat/pixel)
-    vlos[density < 7] = np.nan
-    im = ax.imshow(vlos.T,extent=extent,origin='lower',cmap=cmap,vmin=-1,vmax=1, interpolation='nearest')
+    vlos[density < 6.5] = np.nan
+    im = ax.imshow(vlos.T,extent=extent,origin='lower',cmap=cmap,vmin=-0.9,vmax=0.9, interpolation='nearest')
     ax.set_aspect('auto')
     ax.set_xticks([])
     ax.set_yticks([])
     return im
 
-def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=False):
-    means = auto_gmm.best_model.means_
-    covariances = auto_gmm.best_model.covariances_
+def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None, threshold_line=False):
+    means = model.means_
+    covariances = model.covariances_
 
     _, dims = means.shape 
      
-    ecut = auto_gmm.ecut 
-    etacut= 0.5
+    ecut = eoemin_cut
+    etacut= jzojc_cut
     bulge_index = (means[:, 0] < ecut) & (np.abs(means[:, 1]) < etacut)
     halo_index  = (means[:, 0] > ecut) & (np.abs(means[:, 1]) < etacut)
     warmdisk_index = (means[:, 1] > etacut) & (means[:, 1] < 0.85)
@@ -346,14 +347,46 @@ def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=Fal
                                 np.array(mcolors.to_rgb('peachpuff')) * t)
                 for t in np.linspace(0, 1, halo_ncs)]
 
-    components = [
+    color_map = {
+        'Total': 'k',
+        'Bulge': 'red', 
+        'Halo': 'orange',
+        'Cold disk': 'blue',
+        'Warm disk': 'green',
+        'Counter-rotating disk': 'purple'
+    }
+    particle_map = {
+        'Total': galaxy.s,
+        'Bulge': galaxy.bulge,
+        'Halo': galaxy.halo,
+        'Cold disk': galaxy.colddisk,
+        'Warm disk': galaxy.warmdisk,
+        'Counter-rotating disk': galaxy.counter_rotate_disk
+    }
+    component_map = [
         (bulge_means, 'Bulge'), 
         (halo_means, 'Halo'),
         (colddisk_means, 'Cold disk'),
         (warmdisk_means, 'Warm disk'),
         (counter_rotate_means, 'Counter-rotating disk')
     ]
-    names = ['Total'] + [name for data, name in components if len(data) > 0] + ['Color bar']
+    names = ['Total'] + [name for data, name in component_map if len(data) > 0] + ['Color bar']
+    plot_items = []
+    for name in names:
+        if name == 'Color bar':
+            plot_items.append({
+            'name': name,
+            'color': None,
+            'particle': None,
+        })
+        else:
+            color = color_map[name]
+            particle = particle_map[name]        
+            plot_items.append({
+                'name': name,
+                'color': color,
+                'particle': particle,
+            })
     ncol = len(names)
 
     image_unit = 3
@@ -365,7 +398,7 @@ def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=Fal
     tick_fontsize = 10
     xylabel_fontsize = 14
     title_fontsize = 14
-    text_fontsize = 10
+    text_fontsize = 9
     fig = plt.figure(figsize=figsize)
     outer_gs = fig.add_gridspec(
             2, 1,
@@ -382,7 +415,7 @@ def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=Fal
 
     ps_gs = outer_gs[0].subgridspec(1, ps_ncol, wspace=0, hspace=0, width_ratios=width_ratios)
 
-    bins = [min(int(np.ptp(X[:, 0]) / _hist_bin_fd(X[:, 0])), 200), min(int(np.ptp(X[:, 1]) / _hist_bin_fd(X[:, 1])), 200)]
+    bins = max(min(int(np.ptp(X[:, 0]) / _hist_bin_fd(X[:, 0])), 200), min(int(np.ptp(X[:, 1]) / _hist_bin_fd(X[:, 1])), 200))
     hist_params = {
         'bins': bins,
         'cmap': 'Spectral',
@@ -433,14 +466,15 @@ def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=Fal
     sd_ncol = ncol
     sd_gs = outer_gs[1].subgridspec(3, sd_ncol, wspace=0, hspace=0, width_ratios=[1 for _ in range(sd_ncol-1)]+[0.05], height_ratios=[1,0.5,0.5])
     
-    map  = {'Total': galaxy.s, 'Bulge': galaxy.bulge, 'Halo': galaxy.halo, 'Cold disk': galaxy.colddisk, 'Warm disk': galaxy.warmdisk, 'Counter-rotating disk': galaxy.counter_rotate_disk}
-    colors = ['k', 'red', 'orange', 'blue', 'green', 'purple']
-    size = 6.5*galaxy.s.r50
+    size = min(max(np.sqrt(2)*5*galaxy.s.r50, 1.2*np.sqrt(2)*galaxy.s.r90), 100)
     bin_width = 2*galaxy.properties['eps']
     bins = min(int(2*size/bin_width), 300)
     
     for i in range(3):
-        for j, name in enumerate(names):
+        for j, plot_item in enumerate(plot_items):
+            name = plot_item['name']
+            color= plot_item['color']
+            particle = plot_item['particle']
             if name == "Color bar":
                 if i==0:
                     ax = plt.subplot(sd_gs[i,j])
@@ -458,28 +492,55 @@ def visualize_decomposition(X, auto_gmm, galaxy, ranges=None, threshold_line=Fal
                     cbar.set_label('$v_{los}/\sqrt{v_{los}^{2}+3\sigma_{los}^{2}}$', fontsize=bar_label_fontsize)
                     cbar.ax.tick_params(labelsize=tick_fontsize)
             else:
-                comp = map[name]
                 ax = plt.subplot(sd_gs[i,j])
                 if i==0:
-                    im = plot_surface_density(ax, comp['pos'], comp['mass'], size=size, bins=bins)
+                    im = plot_surface_density(ax, particle['pos'], particle['mass'], size=size, bins=bins)
+                    if name == "Total":
+                        circle = plt.Circle((0, 0), galaxy.s.r50, fill=False, color='k', linewidth=1, linestyle='--', alpha=0.75)
+                        ax.add_patch(circle)
+                        circle = plt.Circle((0, 0), galaxy.s.r90, fill=False, color='orange', linewidth=1, linestyle='--', alpha=0.75)
+                        ax.add_patch(circle)
+                        fmt = '.2f' if galaxy.s.r90 >= 10 and galaxy.s.r50 < 10 else '.1f'
+                        ax.text(0.96, 0.09, f'$r_{{50}} = {galaxy.s.r50:{fmt}}$ kpc', 
+                                transform=ax.transAxes, ha='right', va='bottom', fontsize=text_fontsize, color='k')
+                        ax.text(0.96, 0.02, f'$r_{{90}} = {galaxy.s.r90:.1f}$ kpc', 
+                                transform=ax.transAxes, ha='right', va='bottom', fontsize=text_fontsize, color='orange')
                     if j != 0: 
-                        ax.set_title(f'{name} ({comp.Mass_frac*100:.0f}%)', color=colors[j], fontsize=title_fontsize)
+                        ax.set_title(f'{name} ({particle.Mass_frac*100:.0f}%)', color=color, fontsize=title_fontsize)
                     else:
-                        ax.set_title(f'{name}', color=colors[j], fontsize=title_fontsize) 
-                    """
-                    if j != 0:
-                        ax.text(0.95, 0.95, f'{comp.Mass_frac:.2f}', 
-                        transform=ax.transAxes,
-                        ha='right', 
-                        va='top',
-                        fontsize=text_fontsize,
-                        color=colors[j])
-                    """
+                        ax.set_title(f'{name}', color=color, fontsize=title_fontsize) 
                 else:
                     if i == 1:
-                        im = plot_surface_density(ax, comp['pos'], comp['mass'], 'edge', size=size, bins=bins)
+                        im = plot_surface_density(ax, particle['pos'], particle['mass'], 'edge', size=size, bins=bins)
                     else:
-                        im = plot_vlos(ax, comp['pos'], comp['vel'], comp['mass'], size=size, bins=bins) 
-        
-                    
-
+                        im = plot_vlos(ax, particle['pos'], particle['vel'], particle['mass'], size=size, bins=bins) 
+    del means, covariances
+    if 'bulge_means' in locals():
+        del bulge_means, bulge_covariances
+    if 'halo_means' in locals():
+        del halo_means, halo_covariances
+    if 'warmdisk_means' in locals():
+        del warmdisk_means, warmdisk_covariances
+    if 'colddisk_means' in locals():
+        del colddisk_means, colddisk_covariances
+    if 'counter_rotate_means' in locals():
+        del counter_rotate_means, counter_rotate_covariances
+    if 'colors_bulge' in locals():
+        del colors_bulge
+    if 'colors_halo' in locals():
+        del colors_halo
+    if 'colors_colddisk' in locals():
+        del colors_colddisk
+    if 'colors_warmdisk' in locals():
+        del colors_warmdisk
+    if 'colors_counter_rotate' in locals():
+        del colors_counter_rotate
+    if 'plot_items' in locals():
+        del plot_items
+    if 'component_map' in locals():
+        del component_map
+    if 'particle' in locals():
+        del particle
+    import gc
+    gc.collect()
+    return fig
