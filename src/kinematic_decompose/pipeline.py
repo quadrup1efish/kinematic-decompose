@@ -9,6 +9,8 @@ from .gravity.kinematic_solver import create_multipole_potential, calculate_kine
 from .visualize import visualize_decomposition
 from .config import BASEPATH
 
+RCUT_RANGE = [1, 10]
+
 def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
 
     eoemin_index = 0
@@ -16,12 +18,25 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
     jpojc_index = 2
     X = np.column_stack([galaxy.s['eoemin'], galaxy.s['jzojc'], galaxy.s['jpojc']])
     keep_particle = (galaxy.s['eoemin']<0)&(np.abs(galaxy.s['jzojc'])<1.5)&(galaxy.s['jpojc']<1.5)
+    """
     eps   = galaxy.properties.get('eps', 0.5)
     r_min = 2*eps
     r_max = min(1.1*galaxy.s.r90, 10)
     step  = 0.5*eps
     eoemin_cut =  util.get_energy_criterion(pot, galaxy.s['r'][keep_particle], galaxy.s['eoemin'][keep_particle],
                                             r_min, r_max, step, cut_ratio='auto')
+    """
+    sph, _ = util.JEHistogram(galaxy.s['eoemin'][keep_particle], galaxy.s['jzojc'][keep_particle], n_E=25, n_eps=50)
+    sph = (sph) & (np.abs(galaxy.s['jzojc'][keep_particle])<=0.5)
+    eoemin_cut= util.get_Ecut(galaxy.s['eoemin'][keep_particle][sph], galaxy.s['mass'][keep_particle][sph], M_bin=100, m_bin=25, Mmin=0.1)
+    r = np.logspace(-1, 1, 100)
+    points = np.column_stack((r*0, r*0, r))
+    potential = pot.potential(points)
+    max_eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, RCUT_RANGE[1])]
+    min_eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, RCUT_RANGE[0])]
+    if eoemin_cut == 0 or max_eoemin_cut < eoemin_cut or eoemin_cut < min_eoemin_cut:
+        eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, 3.5)]
+
     scaler = preprocessing.RobustScaler()
     X_train= scaler.fit_transform(X[keep_particle])
 
@@ -82,7 +97,7 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
     galaxy = snapshot.container
     galaxy = calculate_kinematic_param(galaxy, pot)
     X, model, eoemin_cut, jzojc_cut = train_auto_gaussian_mixture_model(galaxy, pot)
-    galaxy     = util.decompose(X, galaxy, model, eoemin_cut, jzojc_cut)
+    galaxy     = util.decompose(X, galaxy, model, eoemin_cut, jzojc_cut, predict_method='hard')
     if mixture_model_output_path is not None:
         mixture_model_output = util.decompose_mixture_model(model, eoemin_cut, jzojc_cut, -jzojc_cut)
         with open(f"{mixture_model_output_path}/mixture_model_{run}_{snapNum}_{subID}.pkl", "wb") as f:

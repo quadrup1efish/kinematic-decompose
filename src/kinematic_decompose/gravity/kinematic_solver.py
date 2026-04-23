@@ -16,9 +16,9 @@ def create_multipole_potential(
     positions: np.ndarray,
     masses: np.ndarray,
     eps: float = 0.39,
-    symmetry: str = 's',
-    rmin: float = 1e-3,
-    lmax: int = 8,
+    symmetry: str = 'a',
+    rmin: float = 1e-2,
+    lmax: int = 4,
     gridsizeR: int = 40,
     export: bool = False,
     filename: str|None = None
