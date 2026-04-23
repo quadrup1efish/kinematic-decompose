@@ -9,7 +9,7 @@ from .gravity.kinematic_solver import create_multipole_potential, calculate_kine
 from .visualize import visualize_decomposition
 from .config import BASEPATH
 
-RCUT_RANGE = [1, 10]
+RCUT_RANGE = [1, 7]
 
 def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
 
