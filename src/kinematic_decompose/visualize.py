@@ -479,7 +479,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
                 if i==0:
                     ax = plt.subplot(sd_gs[i,j])
                     cbar = fig.colorbar(im, cax=ax, pad=0)
-                    cbar.set_label(r'$\log_{10} \Sigma_*$/(M$_\odot$ kpc$^{-2}$)', fontsize=bar_label_fontsize)
+                    cbar.set_label(r'$\log_{10} \Sigma_*$/(M$_\odot$ kpc$^{-2}$)', fontsize=bar_label_fontsize-1)
                     cbar.ax.tick_params(labelsize=tick_fontsize)
                 elif i==1:
                     ax = plt.subplot(sd_gs[i,j])
@@ -489,7 +489,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
                 else:
                     ax = plt.subplot(sd_gs[i,-1])
                     cbar = fig.colorbar(im, cax=ax, pad=0)
-                    cbar.set_label('$v_{los}/\sqrt{v_{los}^{2}+3\sigma_{los}^{2}}$', fontsize=bar_label_fontsize)
+                    cbar.set_label('$v_{los}/\sqrt{v_{los}^{2}+3\sigma_{los}^{2}}$', fontsize=bar_label_fontsize-5)
                     cbar.ax.tick_params(labelsize=tick_fontsize)
             else:
                 ax = plt.subplot(sd_gs[i,j])

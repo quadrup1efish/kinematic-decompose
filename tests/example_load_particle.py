@@ -1,3 +1,4 @@
+import sys
 import pynbody
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,7 +16,7 @@ snapshot.physical_units()
 snapshot.center()
 snapshot.faceon(align_with='star', as_context=False)
 
-fig, axes = plt.subplots(1,3, figsize=(12,3))
+fig, axes = plt.subplots(1,3, figsize=(15,3))
 pynbody.plot.image(snapshot.dm, axes=axes[0], width="1.5 Mpc", units="Msol kpc^-2", cmap="twilight", colorbar_label=r"$\Sigma_{\mathrm{gas}} / M_{\odot}\,\mathrm{kpc}^{-2}$")
 pynbody.plot.image(snapshot.star, axes=axes[1], width="500 kpc", units="Msol kpc^-2", cmap="bone", colorbar_label=r"$\Sigma_{\mathrm{gas}} / M_{\odot}\,\mathrm{kpc}^{-2}$")
 pynbody.plot.image(snapshot.gas, axes=axes[2], width="500 kpc", units="Msol kpc^-2", cmap="bone", colorbar_label=r"$\Sigma_{\mathrm{gas}} / M_{\odot}\,\mathrm{kpc}^{-2}$")

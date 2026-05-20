@@ -51,7 +51,7 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
                             r_jzojc_cut = r_jzojc_cut_train, 
                             sample_weight=galaxy.s['mass'][keep_particle],
                             max_iter=200, 
-                            min_iter=50)
+                            min_iter=10)
 
     best_model = scaler.inverse_transform_GMM(auto_gmm.best_model) 
     return X, best_model, eoemin_cut, jzojc_cut
@@ -104,7 +104,7 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
             pickle.dump(mixture_model_output, f)
     if image_path is not None:
         visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True, ranges=None)
-        plt.savefig(Path(image_path)/f"{subID}.png", dpi=300)
+        plt.savefig(Path(image_path)/f"{subID}.pdf", dpi=300, bbox_inches='tight')
     if structure_properties_output_path is not None:
         structure_properties_output = util.save_structure_properties(galaxy)
         with open(f"{structure_properties_output_path}/structure_properties_{run}_{snapNum}_{subID}.pkl", "wb") as f:

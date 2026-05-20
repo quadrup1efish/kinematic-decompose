@@ -35,7 +35,7 @@ bulge_filter     = filt.BandPass('label',  1.5, 2.5)
 halo_filter      = filt.BandPass('label',  2.5, 3.5)
 cold_gas_filter  = filt.BandPass('temp',   0  , 10**5)
 disk_gas_filter  = filt.BandPass('jzojc',  0.85, 1.5)
-counter_rotate_disk_filter = filt.BandPass('label',  3.5, 4.5)
+counter_rotating_disk_filter = filt.BandPass('label',  3.5, 4.5)
 
 def _disk(self):
     return self.s[disk_filter]
@@ -55,8 +55,8 @@ def _bulge(self):
 def _halo(self):
     return self.s[halo_filter]
 
-def _counter_rotate_disk(self):
-    return self.s[counter_rotate_disk_filter]
+def _counter_rotating_disk(self):
+    return self.s[counter_rotating_disk_filter]
 
 def _coldgas(self):
     return self.g[cold_gas_filter]#&disk_gas_filter]
@@ -260,7 +260,7 @@ def register():
     Sim.warmdisk = property(_warmdisk)
     Sim.bulge = property(_bulge)
     Sim.halo = property(_halo)
-    Sim.counter_rotate_disk = property(_counter_rotate_disk)
+    Sim.counter_rotating_disk = property(_counter_rotating_disk)
     Sim.coldgas = property(_coldgas)
 
     for cls in classes:
