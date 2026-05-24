@@ -135,7 +135,7 @@ class AutoGaussianMixtureModel:
                 self.initial_model.means_[k, jzojc_index] = scaler.transform(0.0, columns=jzojc_index)
                 diag = np.diag(self.initial_model.covariances_[k])
                 self.initial_model.covariances_[k] = np.diag(diag)
-            self.initial_model.precisions_[k] = np.diag(1.0 / diag)
+                self.initial_model.precisions_[k] = np.diag(1.0 / diag)
         
         return self.initial_model
     
