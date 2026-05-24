@@ -361,7 +361,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
         'Halo': galaxy.halo,
         'Cold disk': galaxy.colddisk,
         'Warm disk': galaxy.warmdisk,
-        'Counter-rotating disk': galaxy.counter_rotate_disk
+        'Counter-rotating disk': galaxy.counter_rotating_disk
     }
     component_map = [
         (bulge_means, 'Bulge'), 
@@ -420,7 +420,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
         'bins': bins,
         'cmap': 'Spectral',
         'cmin': 1,
-        'norm': LogNorm(),
+        'norm': LogNorm(vmin=1),
     }
 
     if dims == 3: projects = [[1,0], [1,2], [2,0]]
@@ -440,7 +440,10 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
 
     for i, proj in enumerate(projects):
         ax = plt.subplot(ps_gs[2*i+1])
-        im = ax.hist2d(X[:, proj[0]], X[:, proj[1]], range=[ranges[proj[0]],ranges[proj[1]]],**hist_params)
+        counts, xedges, yedges, im = ax.hist2d(X[:, proj[0]], X[:, proj[1]],
+                                                range=[ranges[proj[0]],ranges[proj[1]]],
+                                                **hist_params)
+        im.set_clim(vmin=1, vmax=np.nanmax(counts)*1.5)
         for j, (mean, covariance) in enumerate(zip(bulge_means, bulge_covariances)):
             gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_bulge[j])
         for j, (mean, covariance) in enumerate(zip(halo_means, halo_covariances)):
@@ -460,7 +463,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
             ax.axhline(ecut, lw=1, linestyle=':', color='k')
 
     ax = plt.subplot(ps_gs[2*i+1+1])
-    cbar = fig.colorbar(im[3], cax=ax, pad=0)
+    cbar = fig.colorbar(im, cax=ax, pad=0, extend='max')
     cbar.set_label('$N_{*}$', fontsize=bar_label_fontsize)
     cbar.ax.tick_params(labelsize=tick_fontsize)
     sd_ncol = ncol

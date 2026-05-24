@@ -13,7 +13,7 @@ MIN_WEIGHT = 0.01
 MAX_N_COMPONENTS = 15
 MIN_POINTS = 10
 CBIC = -0.1
-BF = 0.95
+BF = 0.951
 
 class AutoGaussianMixtureModel:
     def __init__(self, n_components=None, model=None, dim=None, morphology_type=None):
@@ -21,7 +21,7 @@ class AutoGaussianMixtureModel:
         self.morphology_type = morphology_type
 
     def _morphology_class(self, X, jzojc_cut):
-        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=200, min_iter=50, tol=1e-4).fit(X)
+        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-4).fit(X)
         if np.max(self.morphology_model.means_[:,1]) > jzojc_cut:
             self.morphology_type='disk'
         else:
@@ -60,7 +60,7 @@ class AutoGaussianMixtureModel:
             halo_X = halo_X[sph]
             del halo_X_raw, sph
                     
-        if (len(halo_labels) != 0 & len(bulge_labels) != 0):
+        if len(halo_labels) != 0 and len(bulge_labels) != 0:
             halo_weight = model.weights_[halo_labels][0]
             halo_mean   = model.means_[halo_labels][0]
             halo_covariance  = model.covariances_[halo_labels][0]
@@ -68,38 +68,55 @@ class AutoGaussianMixtureModel:
             bulge_weight = model.weights_[bulge_labels][0]
             bulge_mean   = model.means_[bulge_labels][0]
             bulge_covariance = model.covariances_[bulge_labels][0]
-            #mahal_between = abs(halo_mean[0] - bulge_mean[0]) / np.sqrt((halo_covariance[0,0]**2 + bulge_covariance[0,0]**2)/2)
-            if bulge_weight > len(bulge_X)/len(X):
+
+            if bulge_weight > len(bulge_X)/len(X) and len(bulge_X) >= 2:
                 bulge_weight = len(bulge_X)/len(X)
                 bulge_mean   = np.mean(bulge_X, axis=0)
                 bulge_covariance = np.cov(bulge_X, rowvar=False)
             
-            if halo_weight > len(halo_X)/len(X):
+            if halo_weight > len(halo_X)/len(X) and len(halo_X) >= 2:
                 halo_weight  = len(halo_X)/len(X)
                 halo_mean    = np.mean(halo_X, axis=0)
                 halo_covariance  = np.cov(halo_X, rowvar=False)
         else:
-            bulge_weight = len(bulge_X)/len(X)
-            bulge_mean   = np.mean(bulge_X, axis=0)
-            bulge_covariance = np.cov(bulge_X, rowvar=False)
+            if len(bulge_X) >= 2:
+                bulge_weight = len(bulge_X)/len(X)
+                bulge_mean   = np.mean(bulge_X, axis=0)
+                bulge_covariance = np.cov(bulge_X, rowvar=False)
+            else:
+                bulge_weight = 0.0
+                bulge_mean = np.zeros(X.shape[1])
+                bulge_covariance = np.eye(X.shape[1])
             
-            halo_weight  = len(halo_X)/len(X)
-            halo_mean    = np.mean(halo_X, axis=0)
-            halo_covariance  = np.cov(halo_X, rowvar=False)
+            if len(halo_X) >= 2:
+                halo_weight  = len(halo_X)/len(X)
+                halo_mean    = np.mean(halo_X, axis=0)
+                halo_covariance  = np.cov(halo_X, rowvar=False)
+            else:
+                halo_weight = 0.0
+                halo_mean = np.zeros(X.shape[1])
+                halo_covariance = np.eye(X.shape[1])
         
         new_weights = old_weights[disk_labels].tolist()
         new_means = old_means[disk_labels].tolist()
         new_covariances = old_covariances[disk_labels].tolist()
 
-        new_weights.extend([bulge_weight, halo_weight])
-        new_means.extend([bulge_mean, halo_mean])
-        new_covariances.extend([bulge_covariance, halo_covariance])
+        if len(bulge_X) >= 2:
+            new_weights.append(bulge_weight)
+            new_means.append(bulge_mean)
+            new_covariances.append(bulge_covariance)
+
+        if len(halo_X) >= 2:
+            new_weights.append(halo_weight)
+            new_means.append(halo_mean)
+            new_covariances.append(halo_covariance)
         
         weights_init = np.array(new_weights)
         weights_init/=weights_init.sum()
         means_init = np.array(new_means)
         covariances_init=np.array(new_covariances)
-        precisions_init  = np.linalg.pinv(covariances_init)
+        covariances_init += 1e-6 * np.eye(X.shape[1])
+        precisions_init  = np.linalg.inv(covariances_init)
 
         self.initial_model = GM(len(new_weights), 
                                 weights_init=weights_init, 
@@ -107,6 +124,18 @@ class AutoGaussianMixtureModel:
                                 precisions_init=precisions_init, 
                                 max_iter=0,
                                 min_iter=0).fit(X)
+        
+        if scaler is not None:
+            halo_mask = (
+                (self.initial_model.means_[:, jzojc_index] < jzojc_cut) 
+                & (self.initial_model.means_[:, jzojc_index] > r_jzojc_cut)
+                #& (self.initial_model.means_[:, eoemin_index] > eoemin_cut)
+            )
+            for k in np.where(halo_mask)[0]:
+                self.initial_model.means_[k, jzojc_index] = scaler.transform(0.0, columns=jzojc_index)
+                diag = np.diag(self.initial_model.covariances_[k])
+                self.initial_model.covariances_[k] = np.diag(diag)
+            self.initial_model.precisions_[k] = np.diag(1.0 / diag)
         
         return self.initial_model
     

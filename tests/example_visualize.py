@@ -1,5 +1,5 @@
 import matplotlib.pyplot as plt
-from kinematic_decompose.mixture import AutoGMM
+from kinematic_decompose.mixture import AutoGaussianMixtureModel as AutoGMM
 from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
 from kinematic_decompose.gravity.kinematic_solver import create_multipole_potential, calculate_kinematic_param
 from kinematic_decompose.visualize import visualize_decomposition

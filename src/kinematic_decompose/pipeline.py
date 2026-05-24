@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from .mixture import AutoGaussianMixtureModel, util, preprocessing
 from .PyTNG.snapshot_loader import Snapshot
-from .gravity.kinematic_solver import create_multipole_potential, calculate_kinematic_param
+from .gravity.kinematic_solver import construct_galaxy_potential_model, calculate_kinematic_param
 from .visualize import visualize_decomposition
 from .config import BASEPATH
 
@@ -51,7 +51,8 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
                             r_jzojc_cut = r_jzojc_cut_train, 
                             sample_weight=galaxy.s['mass'][keep_particle],
                             max_iter=200, 
-                            min_iter=10)
+                            min_iter=0,
+                            scaler=scaler)
 
     best_model = scaler.inverse_transform_GMM(auto_gmm.best_model) 
     return X, best_model, eoemin_cut, jzojc_cut
@@ -77,13 +78,10 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
             snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
             snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50], as_context=False)
             galaxy = snapshot.container
-            pot = create_multipole_potential(galaxy['pos'], galaxy['mass'])
-            pot.export(filename)
-
-    if gravity_potential_path is not None: 
+            pot = construct_galaxy_potential_model(galaxy)
+            pot.export(filename) 
         pot = agama.Potential(filename)
-    else:
-        pot = None
+
     snapshot = Snapshot(basePath, snapNum)
     load_particle_fields = {"star": ['Coordinates', 'Velocities', 'Masses', 'ParticleIDs', 'GFM_StellarFormationTime'],
                             "dm": ['Coordinates', 'Velocities', 'Masses'],

@@ -18,6 +18,7 @@ def create_multipole_potential(
     eps: float = 0.39,
     symmetry: str = 'a',
     rmin: float = 1e-2,
+    rmax: float = 0,
     lmax: int = 4,
     gridsizeR: int = 40,
     export: bool = False,
@@ -65,6 +66,7 @@ def create_multipole_potential(
         symmetry=symmetry,
         smoothing=eps,
         rmin=rmin,
+        rmax=rmax,
         lmax=lmax,
         gridsizeR=gridsizeR
     )
@@ -76,6 +78,42 @@ def create_multipole_potential(
         pot.export(filename)
     
     return pot
+
+def construct_galaxy_potential_model(galaxy):
+    eps = galaxy.properties.get('eps', 0.39)
+
+    components = [
+        ('dm',  's', 0),
+        ('gas', 'a', 4),
+        ('s',   'a', 4),
+    ]
+
+    potentials = []
+
+    for name, symmetry, lmax in components:
+        pos = getattr(galaxy, name)['pos']
+        mass = getattr(galaxy, name)['mass']
+
+        if len(pos) < 10:
+            print(f"Warning: {name} particles too few ({len(pos)}), skipping.")
+            continue
+
+        pot = create_multipole_potential(
+            pos, mass,
+            eps=eps,
+            symmetry=symmetry,
+            rmin=0.01,
+            rmax=galaxy.R_vir,
+            lmax=lmax,
+            gridsizeR=25
+        )
+        potentials.append(pot)
+
+    if not potentials:
+        raise ValueError("No valid potential components (all particle sets too small).")
+
+    return agama.Potential(*potentials)
+
 
 def calculate_kinematic_param(
     galaxy: SimSnap,
@@ -97,12 +135,13 @@ def calculate_kinematic_param(
     # 1. Create or load potential
     if potential is None:
         if filename is None:
-            positions = galaxy['pos'].view(np.ndarray)
-            masses = galaxy['mass'].view(np.ndarray)
-            eps = galaxy.properties.get('eps', 0.39)
-            potential = create_multipole_potential(
-                positions, masses, eps, export=False
-            )
+            #positions = galaxy['pos'].view(np.ndarray)
+            #masses = galaxy['mass'].view(np.ndarray)
+            #eps = galaxy.properties.get('eps', 0.39)
+            #potential = create_multipole_potential(
+            #    positions, masses, eps, export=False
+            #)
+            potential = construct_galaxy_potential_model(galaxy)
         else:
             potential = agama.Potential(filename)
     else:

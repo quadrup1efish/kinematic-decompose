@@ -174,6 +174,9 @@ def _v_rot(self):
     if len(self['r']) == 0: return np.nan 
     return np.mean(self['vcxy'][self['r']<self.r50])
 
+def _mass(self):
+    return self['mass'].sum()
+
 def _mvir(self):
     return self['mass'].sum()
 
@@ -205,7 +208,7 @@ def _AM(self):
 
 def _spin(self):
     sim = self.ancestor
-    j = np.sqrt((self.AM**2).sum()) / self.M_vir
+    j = np.sqrt((self.AM**2).sum()) / self.mass
     return j / (np.sqrt(2) * sim.R_vir * sim.V_vir)
 
 def _krot(self):
@@ -269,9 +272,10 @@ def register():
         cls.R50 = property(_R)
         cls.z50 = property(_z)
         cls.t50 = property(_t)
-        cls.krot = property(_krot)
-        cls.beta = property(_beta)
-        cls.AM = property(_AM)
+        cls.krot= property(_krot)
+        cls.beta= property(_beta)
+        cls.AM  = property(_AM)
+        cls.mass  = property(_mass) 
         cls.M_vir = property(_mvir)
         cls.V_vir = property(_vvir)
         cls.R_vir = property(_rvir)
