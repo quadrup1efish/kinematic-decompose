@@ -4,11 +4,17 @@ from kinematic_decompose.pipeline import kinematic_decomposition_pipeline
 run = "TNG50-1"
 snapNum = 99 
 subID = 307486
+import cProfile, pstats
+profiler = cProfile.Profile()
+profiler.enable()
 model, galaxy, eoemin_cut, jzojc_cut = kinematic_decomposition_pipeline(run=run, snapNum=snapNum, subID=subID,
                                                                         gravity_potential_path=TEST_DATA_PATH,
                                                                         image_path=TEST_IMAGE_PATH,
-                                                                        structure_properties_output_path=TEST_DATA_PATH,
-                                                                        mixture_model_output_path=TEST_DATA_PATH)
+                                                                        structure_properties_output_path=None,#TEST_DATA_PATH,
+                                                                        mixture_model_output_path=None)#TEST_DATA_PATH)
+profiler.disable()
+stats = pstats.Stats(profiler).sort_stats('cumtime')
+stats.print_stats(20) 
 
 import pickle
 with open(f"{TEST_DATA_PATH}/structure_properties_{run}_{snapNum}_{subID}.pkl", "rb") as f:

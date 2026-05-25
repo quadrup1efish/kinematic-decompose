@@ -50,11 +50,12 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
                             jzojc_cut=jzojc_cut_train,
                             r_jzojc_cut = r_jzojc_cut_train, 
                             sample_weight=galaxy.s['mass'][keep_particle],
-                            max_iter=200, 
-                            min_iter=0,
-                            scaler=scaler)
+                            max_iter=100, 
+                            min_iter=10,
+                            scaler=scaler,
+                            use_float32=True)
 
-    best_model = scaler.inverse_transform_GMM(auto_gmm.best_model) 
+    best_model = scaler.inverse_transform_GMM(auto_gmm.best_model)
     return X, best_model, eoemin_cut, jzojc_cut
   
 def kinematic_decomposition_pipeline(run, snapNum, subID, 

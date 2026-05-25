@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.ndimage import label
+from scipy.ndimage import label, sum as ndimage_sum
 
 from .util import *
 from ._gaussian_mixture import GaussianMixture as GM
@@ -21,7 +21,7 @@ class AutoGaussianMixtureModel:
         self.morphology_type = morphology_type
 
     def _morphology_class(self, X, jzojc_cut):
-        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-4).fit(X)
+        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=100, min_iter=10, tol=1e-4).fit(X)
         if np.max(self.morphology_model.means_[:,1]) > jzojc_cut:
             self.morphology_type='disk'
         else:
@@ -30,8 +30,8 @@ class AutoGaussianMixtureModel:
         return self.morphology_model
     
     def _initialize(self, X, model, eoemin_cut, jzojc_cut, r_jzojc_cut,  
-                    eoemin_index=0, jzojc_index=1, jpojc_index=2, disable_zero_rotation='halo', scaler=None):
-        if model is None and getattr('morphology_model'):
+                    eoemin_index=0, jzojc_index=1, jpojc_index=2, disable_zero_rotation='all', scaler=None):
+        if model is None and hasattr(self, 'morphology_model'):
             model = self.morphology_model
             
         old_weights = model.weights_
@@ -39,13 +39,13 @@ class AutoGaussianMixtureModel:
         old_covariances = model.covariances_
     
         labels = model.soft_predict(X)
-        spheroid_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & ((model.means_[:,jzojc_index] > r_jzojc_cut)))[0]
-        halo_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & 
-                            (model.means_[:,jzojc_index] > r_jzojc_cut) & 
-                            (model.means_[:,eoemin_index] > eoemin_cut))[0]
-        bulge_labels = np.where((model.means_[:,jzojc_index] < jzojc_cut) & 
-                            (model.means_[:,jzojc_index] > r_jzojc_cut) & 
-                            (model.means_[:,eoemin_index] < eoemin_cut))[0]
+        jzojc_means = model.means_[:, jzojc_index]
+        eoemin_means = model.means_[:, eoemin_index]
+
+        spheroid_cond = (jzojc_means < jzojc_cut) & (jzojc_means > r_jzojc_cut)
+        spheroid_labels = np.where(spheroid_cond)[0]
+        halo_labels = np.where(spheroid_cond & (eoemin_means > eoemin_cut))[0]
+        bulge_labels = np.where(spheroid_cond & (eoemin_means < eoemin_cut))[0]
         
         disk_labels = np.setdiff1d(np.unique(labels), spheroid_labels)
         spheroid_X = X[np.isin(labels,spheroid_labels)]
@@ -54,11 +54,15 @@ class AutoGaussianMixtureModel:
                              ((spheroid_X[:,jzojc_index]<=jzojc_cut)) &
                              ((spheroid_X[:,jzojc_index]>=r_jzojc_cut))]
         
-        if disable_zero_rotation == 'halo' and scaler is not None:
+        if disable_zero_rotation == 'all' and scaler is not None:
             halo_X_raw = scaler.inverse_transform(halo_X, columns=[eoemin_index, jzojc_index])
             sph, _ = JEHistogram(halo_X_raw[:, eoemin_index], halo_X_raw[:, jzojc_index])
             halo_X = halo_X[sph]
             del halo_X_raw, sph
+            bulge_X_raw = scaler.inverse_transform(bulge_X, columns=[eoemin_index, jzojc_index])
+            sph, _ = JEHistogram(bulge_X_raw[:, eoemin_index], bulge_X_raw[:, jzojc_index])
+            bulge_X = bulge_X[sph]
+            del bulge_X_raw, sph
                     
         if len(halo_labels) != 0 and len(bulge_labels) != 0:
             halo_weight = model.weights_[halo_labels][0]
@@ -85,8 +89,8 @@ class AutoGaussianMixtureModel:
                 bulge_covariance = np.cov(bulge_X, rowvar=False)
             else:
                 bulge_weight = 0.0
-                bulge_mean = np.zeros(X.shape[1])
-                bulge_covariance = np.eye(X.shape[1])
+                bulge_mean = np.zeros(X.shape[1], dtype=X.dtype)
+                bulge_covariance = np.eye(X.shape[1], dtype=X.dtype)
             
             if len(halo_X) >= 2:
                 halo_weight  = len(halo_X)/len(X)
@@ -94,8 +98,8 @@ class AutoGaussianMixtureModel:
                 halo_covariance  = np.cov(halo_X, rowvar=False)
             else:
                 halo_weight = 0.0
-                halo_mean = np.zeros(X.shape[1])
-                halo_covariance = np.eye(X.shape[1])
+                halo_mean = np.zeros(X.shape[1], dtype=X.dtype)
+                halo_covariance = np.eye(X.shape[1], dtype=X.dtype)
         
         new_weights = old_weights[disk_labels].tolist()
         new_means = old_means[disk_labels].tolist()
@@ -111,11 +115,11 @@ class AutoGaussianMixtureModel:
             new_means.append(halo_mean)
             new_covariances.append(halo_covariance)
         
-        weights_init = np.array(new_weights)
+        weights_init = np.array(new_weights, dtype=X.dtype)
         weights_init/=weights_init.sum()
-        means_init = np.array(new_means)
-        covariances_init=np.array(new_covariances)
-        covariances_init += 1e-6 * np.eye(X.shape[1])
+        means_init = np.array(new_means, dtype=X.dtype)
+        covariances_init=np.array(new_covariances, dtype=X.dtype)
+        covariances_init += np.float32(1e-6) * np.eye(X.shape[1], dtype=X.dtype)
         precisions_init  = np.linalg.inv(covariances_init)
 
         self.initial_model = GM(len(new_weights), 
@@ -133,7 +137,7 @@ class AutoGaussianMixtureModel:
             )
             for k in np.where(halo_mask)[0]:
                 self.initial_model.means_[k, jzojc_index] = scaler.transform(0.0, columns=jzojc_index)
-                diag = np.diag(self.initial_model.covariances_[k])
+                diag = np.diag(self.initial_model.covariances_[k]).astype(X.dtype)
                 self.initial_model.covariances_[k] = np.diag(diag)
                 self.initial_model.precisions_[k] = np.diag(1.0 / diag)
         
@@ -157,8 +161,8 @@ class AutoGaussianMixtureModel:
         bin_number0 = min(int(np.ptp(eoemin) / wid0), 150)
         bin_number1 = min(int(np.ptp(jzojc) / wid1), 300)
 
-        x_range = [np.percentile(eoemin, 0.1), np.percentile(eoemin, 99.9)]
-        y_range = [np.percentile(jzojc, 0.1), np.percentile(jzojc, 99.9)]
+        x_range = np.percentile(eoemin, [0.1, 99.9]).tolist()
+        y_range = np.percentile(jzojc, [0.1, 99.9]).tolist()
 
         true_prob, x_edges, y_edges = np.histogram2d(
             eoemin, 
@@ -210,18 +214,16 @@ class AutoGaussianMixtureModel:
         point_labels[valid] = labels[ix[valid], iy[valid]]
         
         # ---------- 6. select valid regions ----------
-        k = 0.5*dim*(dim+1) + dim + 1
-        penalty = k * np.log(len(X))
+        k = 0.5 * dim * (dim + 1) + dim + 1
+        penalty = k * np.log(N)
 
         region_ids = np.unique(labels)
         region_ids = region_ids[region_ids != 0]
-
-        gains = [
-            (2*delta_L[labels == lbl].sum() - penalty)/np.sum(point_labels>0)
-            for lbl in region_ids
-        ]
-
-        gains = np.asarray(gains)
+        n_labeled = np.sum(point_labels > 0)
+        if n_labeled == 0 or len(region_ids) == 0:
+            return model, delta_L
+        delta_L_sums = ndimage_sum(delta_L, labels=labels, index=region_ids)
+        gains = (2.0 * delta_L_sums - penalty) / n_labeled
         sorted_idx = np.argsort(gains)[::-1]
         sorted_gains = gains[sorted_idx]
         sorted_labels = region_ids[sorted_idx]
@@ -244,12 +246,12 @@ class AutoGaussianMixtureModel:
         else:
             selected_labels = np.array([], dtype=int)
 
-        model_3d = self._dimensional_ascension(X, model)
-        
-        weights     = list(model_3d[0])
-        means       = list(model_3d[1])
-        covariances = list(model_3d[2])
-        precisions  = list(model_3d[3])
+        w3d, m3d, c3d, p3d = self._dimensional_ascension(X, model)
+
+        weights     = list(w3d)
+        means       = list(m3d)
+        covariances = list(c3d)
+        precisions  = list(p3d)
         
         for lbl in selected_labels:
             pts = X[point_labels == lbl]
@@ -271,7 +273,7 @@ class AutoGaussianMixtureModel:
                 continue
             
             cov = np.cov(pts, rowvar=False)
-            cov += 1e-6 * np.eye(dim)
+            cov += np.float32(1e-6) * np.eye(dim, dtype=X.dtype)
 
             prec = np.linalg.inv(cov)
 
@@ -295,7 +297,23 @@ class AutoGaussianMixtureModel:
                                 min_iter=0).fit(X)
         return self.initial_model, delta_L
     
-    def fit(self, X, eoemin_cut, jzojc_cut, r_jzojc_cut, initial_use=[0,1], sample_weight=None,  disable_zero_rotation='halo', scaler=None, **kwargs): 
+    def fit(
+        self,
+        X: np.ndarray,
+        eoemin_cut: float,
+        jzojc_cut: float,
+        r_jzojc_cut: float,
+        initial_use: tuple | list | None = None,
+        sample_weight: np.ndarray | None = None,
+        disable_zero_rotation: str = 'halo',
+        scaler=None,
+        use_float32: bool = True,
+        **kwargs,
+    ):
+        if initial_use is None:
+            initial_use = [0, 1]
+        if use_float32 and X.dtype == np.float64:
+            X = X.astype(np.float32, copy=False)
         self.morphology_model = self._morphology_class(X=X[:,initial_use], jzojc_cut=jzojc_cut)
         self.initial_model = self._initialize(X[:,initial_use], self.morphology_model, 
                                               eoemin_cut=eoemin_cut,
@@ -310,7 +328,7 @@ class AutoGaussianMixtureModel:
             'weights_init': self.initial_model.weights_,
             'means_init': self.initial_model.means_,
             'precisions_init': self.initial_model.precisions_,
-            'max_iter': 200,
+            'max_iter': 100,
             'min_iter': 50
         }
         params.update(kwargs)
@@ -326,15 +344,15 @@ class AutoGaussianMixtureModel:
         weights = model.weights_
         K = len(weights)
 
-        means_3d = np.zeros((K, dim))
-        covariances_3d  = np.zeros((K, dim, dim))
+        means_3d = np.zeros((K, dim), dtype=X.dtype)
+        covariances_3d  = np.zeros((K, dim, dim), dtype=X.dtype)
         labels = model.soft_predict(X[:, :2])
         
         for k in range(K):
             mask = (labels == k)
             pts = X[mask]
             means_3d[k] = pts.mean(axis=0)
-            covariances_3d[k] = np.cov(pts, rowvar=False) + 1e-6 * np.eye(dim)
+            covariances_3d[k] = np.cov(pts, rowvar=False) + np.float32(1e-6) * np.eye(dim, dtype=X.dtype)
         means_3d[:,[0,1]] = model.means_
         precisions_3d = np.linalg.inv(covariances_3d)
         return weights, means_3d, covariances_3d, precisions_3d
