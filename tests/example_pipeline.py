@@ -12,6 +12,7 @@ model, galaxy, eoemin_cut, jzojc_cut = kinematic_decomposition_pipeline(run=run,
                                                                         image_path=TEST_IMAGE_PATH,
                                                                         structure_properties_output_path=None,#TEST_DATA_PATH,
                                                                         mixture_model_output_path=None)#TEST_DATA_PATH)
+print(galaxy.s.r25, galaxy.bulge.r50)
 profiler.disable()
 stats = pstats.Stats(profiler).sort_stats('cumtime')
 stats.print_stats(20) 

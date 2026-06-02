@@ -89,6 +89,18 @@ def _r90(self, weight='mass', percent=0.90):
     r_idx = np.searchsorted(cum_mass, total_mass * percent)
     return SimArray(r_sorted[r_idx], units=self['pos'].units)
 
+def _r25(self, weight='mass', percent=0.25):
+    if len(self['r']) == 0: return np.nan
+    r_filtered = self['r']
+    w_filtered = self[weight]
+    sort_idx = np.argsort(r_filtered)
+    r_sorted = r_filtered[sort_idx]
+    w_sorted = w_filtered[sort_idx]
+    cum_mass = np.cumsum(w_sorted)
+    total_mass = cum_mass[-1]
+    r_idx = np.searchsorted(cum_mass, total_mass * percent)
+    return SimArray(r_sorted[r_idx], units=self['pos'].units)
+
 def _R(self, weight='mass', percent=0.50):
     if len(self['R']) == 0: return np.nan
     r_filtered = self['R']
@@ -268,6 +280,7 @@ def register():
 
     for cls in classes:
         cls.r50 = property(_r)
+        cls.r25 = property(_r25)
         cls.r90 = property(_r90)
         cls.R50 = property(_R)
         cls.z50 = property(_z)

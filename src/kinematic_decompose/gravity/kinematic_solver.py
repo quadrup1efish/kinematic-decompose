@@ -105,7 +105,7 @@ def construct_galaxy_potential_model(galaxy):
             rmin=0.01,
             rmax=galaxy.R_vir,
             lmax=lmax,
-            gridsizeR=25
+            gridsizeR=40
         )
         potentials.append(pot)
 
@@ -198,6 +198,8 @@ def calculate_kinematic_param(
     
     jc_values[particle_energies > max_energy] = circular_angular_momenta[-1]
     jc_values[particle_energies < min_energy] = circular_angular_momenta[0]
+    jc_values = np.where(np.isnan(jc_values), circular_angular_momenta[-1], jc_values)
+    jc_values = np.maximum(jc_values, circular_angular_momenta[0])
     
     # 6. Store results
     galaxy['jc'] = SimArray(

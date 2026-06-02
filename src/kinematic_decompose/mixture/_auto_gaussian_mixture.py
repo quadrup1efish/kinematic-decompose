@@ -8,7 +8,8 @@ def hist_bin_fd(x):
     iqr = np.subtract(*np.percentile(x, [75, 25]))
     return 2.0 * iqr * x.size ** (-1.0 / 3.0)
 
-MIN_MAHAL = 0.5
+REG_COVAR = 1e-6
+MIN_MAHAL = 0.75
 MIN_WEIGHT = 0.01
 MAX_N_COMPONENTS = 15
 MIN_POINTS = 10
@@ -118,9 +119,14 @@ class AutoGaussianMixtureModel:
         weights_init = np.array(new_weights, dtype=X.dtype)
         weights_init/=weights_init.sum()
         means_init = np.array(new_means, dtype=X.dtype)
-        covariances_init=np.array(new_covariances, dtype=X.dtype)
-        covariances_init += np.float32(1e-6) * np.eye(X.shape[1], dtype=X.dtype)
-        precisions_init  = np.linalg.inv(covariances_init)
+        covariances_init = np.array(new_covariances, dtype=X.dtype)
+        covariances_init += np.float32(REG_COVAR) * np.eye(X.shape[1], dtype=X.dtype)
+        precisions_init = np.linalg.inv(covariances_init)
+        precisions_init = (precisions_init + precisions_init.transpose(0, 2, 1)) / 2
+        evals, evecs = np.linalg.eigh(precisions_init)
+        evals = np.maximum(evals, np.float32(1e-10))
+        precisions_init = (evecs * evals[:, None, :]) @ evecs.transpose(0, 2, 1)
+        precisions_init = (precisions_init + precisions_init.transpose(0, 2, 1)) / 2
 
         self.initial_model = GM(len(new_weights), 
                                 weights_init=weights_init, 
@@ -133,7 +139,7 @@ class AutoGaussianMixtureModel:
             halo_mask = (
                 (self.initial_model.means_[:, jzojc_index] < jzojc_cut) 
                 & (self.initial_model.means_[:, jzojc_index] > r_jzojc_cut)
-                #& (self.initial_model.means_[:, eoemin_index] > eoemin_cut)
+                & (self.initial_model.means_[:, eoemin_index] > eoemin_cut)
             )
             for k in np.where(halo_mask)[0]:
                 self.initial_model.means_[k, jzojc_index] = scaler.transform(0.0, columns=jzojc_index)
@@ -221,7 +227,16 @@ class AutoGaussianMixtureModel:
         region_ids = region_ids[region_ids != 0]
         n_labeled = np.sum(point_labels > 0)
         if n_labeled == 0 or len(region_ids) == 0:
-            return model, delta_L
+            w3d, m3d, c3d, p3d = self._dimensional_ascension(X, model)
+            ascended_model = GM(
+                len(w3d),
+                weights_init=w3d,
+                means_init=m3d,
+                precisions_init=p3d,
+                max_iter=0,
+                min_iter=0
+            ).fit(X)
+            return ascended_model, delta_L
         delta_L_sums = ndimage_sum(delta_L, labels=labels, index=region_ids)
         gains = (2.0 * delta_L_sums - penalty) / n_labeled
         sorted_idx = np.argsort(gains)[::-1]
@@ -256,7 +271,6 @@ class AutoGaussianMixtureModel:
         for lbl in selected_labels:
             pts = X[point_labels == lbl]
             weight = len(pts) / N
-
             if (len(pts) < MIN_POINTS or weight < MIN_WEIGHT):
                 continue
 
@@ -273,9 +287,13 @@ class AutoGaussianMixtureModel:
                 continue
             
             cov = np.cov(pts, rowvar=False)
-            cov += np.float32(1e-6) * np.eye(dim, dtype=X.dtype)
-
+            cov[np.diag_indices_from(cov)] += np.float32(REG_COVAR)
             prec = np.linalg.inv(cov)
+            prec = (prec + prec.T) / 2
+            evals, evecs = np.linalg.eigh(prec)
+            evals = np.maximum(evals, np.float32(1e-10))
+            prec = (evecs * evals) @ evecs.T
+            prec = (prec + prec.T) / 2
 
             weights.append(weight)
             means.append(mean)
@@ -295,6 +313,8 @@ class AutoGaussianMixtureModel:
                                 precisions_init=precisions, 
                                 max_iter=0,
                                 min_iter=0).fit(X)
+        self._cum_ratio = cum_ratio
+        self._n_components_candidates = np.arange(base_nc, len(cum_ratio)+base_nc, 1)
         return self.initial_model, delta_L
     
     def fit(
@@ -340,19 +360,35 @@ class AutoGaussianMixtureModel:
         N, dim = X.shape
         if dim == model.means_.shape[1]:
             return model.weights_, model.means_, model.covariances_, model.precisions_
-        
+
         weights = model.weights_
         K = len(weights)
 
         means_3d = np.zeros((K, dim), dtype=X.dtype)
-        covariances_3d  = np.zeros((K, dim, dim), dtype=X.dtype)
-        labels = model.soft_predict(X[:, :2])
-        
+        covariances_3d = np.zeros((K, dim, dim), dtype=X.dtype)
+
+        proba = model.predict_proba(X[:, :2])
+
         for k in range(K):
-            mask = (labels == k)
-            pts = X[mask]
-            means_3d[k] = pts.mean(axis=0)
-            covariances_3d[k] = np.cov(pts, rowvar=False) + np.float32(1e-6) * np.eye(dim, dtype=X.dtype)
-        means_3d[:,[0,1]] = model.means_
+            pk = proba[:, k]
+            total_weight = pk.sum()
+
+            means_3d[k] = np.average(X, axis=0, weights=pk)
+
+            diff = X - means_3d[k]
+            covariances_3d[k] = np.einsum('i,id,ie->de', pk, diff, diff) / total_weight
+
+        means_3d[:, [0, 1]] = model.means_
+
+        reg = np.float32(REG_COVAR)
+        covariances_3d += reg * np.eye(dim, dtype=X.dtype)
+
         precisions_3d = np.linalg.inv(covariances_3d)
+        precisions_3d = (precisions_3d + precisions_3d.transpose(0, 2, 1)) / 2
+
+        evals, evecs = np.linalg.eigh(precisions_3d)
+        evals = np.maximum(evals, np.float32(1e-10))
+        precisions_3d = (evecs * evals[:, None, :]) @ evecs.transpose(0, 2, 1)
+        precisions_3d = (precisions_3d + precisions_3d.transpose(0, 2, 1)) / 2
+
         return weights, means_3d, covariances_3d, precisions_3d
