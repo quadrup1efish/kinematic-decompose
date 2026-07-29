@@ -29,22 +29,18 @@ class RobustScaler():
     
     def inverse_transform_GMM(self, gmm):
         transformed_gmm = deepcopy(gmm)
-        try:
-            means=gmm.means_.copy()
-            means=means*self.scale_+self.center_
+        n_features = gmm.means_.shape[1]
+        if n_features == len(self.scale_):
+            means = gmm.means_.copy() * self.scale_ + self.center_
             transformed_gmm.means_ = means
-
-            covariances=gmm.covariances_.copy()
             scale_matrix = np.outer(self.scale_, self.scale_)
-            covariances = covariances * scale_matrix[np.newaxis, :, :]
+            covariances = gmm.covariances_.copy() * scale_matrix[np.newaxis, :, :]
             transformed_gmm.covariances_ = covariances
-        except:
-            means=gmm.means_.copy()
-            means=means*self.scale_[:2]+self.center_[:2]
+        else:
+            # fallback: only transform the first 2 dimensions
+            means = gmm.means_.copy() * self.scale_[:2] + self.center_[:2]
             transformed_gmm.means_ = means
-
-            covariances=gmm.covariances_.copy()
             scale_matrix = np.outer(self.scale_[:2], self.scale_[:2])
-            covariances = covariances * scale_matrix[np.newaxis, :, :]
+            covariances = gmm.covariances_.copy() * scale_matrix[np.newaxis, :, :]
             transformed_gmm.covariances_ = covariances
         return transformed_gmm

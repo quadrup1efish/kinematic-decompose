@@ -254,9 +254,9 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
             )
         self._check_parameters(X, xp=xp)
         
-        # if the batch_size < 3*n_samples, we will use the mini batch
+        # if n_samples > 3*batch_size, switch to mini-batch for efficiency
         if use_mini_batch:
-            use_mini_batch = self.batch_size < 3*n_samples
+            use_mini_batch = 3 * self.batch_size < n_samples
 
         # if we enable warm_start, we will have a unique initialisation
         do_init = not (self.warm_start and hasattr(self, "_initialized"))# and hasattr(self, "converged_"))
@@ -362,7 +362,6 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         # Should only warn about convergence if max_iter > 0, otherwise
         # the user is assumed to have used 0-iters initialization
         # to get the initial means.
-        """
         if not self.converged_ and self.max_iter > 0:
             warnings.warn(
                 (
@@ -372,7 +371,6 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                 ),
                 ConvergenceWarning,
             )
-        """
         self._set_parameters(best_params, xp=xp)
         self.n_iter_ = best_n_iter
         self.lower_bound_ = max_lower_bound
@@ -457,7 +455,6 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         X : array-like of shape (n_samples, n_dimensions)
             List of n_features-dimensional data points. Each row
             corresponds to a single data point.
-mini_sample_weight = sample_weight[batch_idx]
 
         y : Ignored
             Not used, present for API consistency by convention.
