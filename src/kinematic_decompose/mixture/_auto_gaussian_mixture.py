@@ -258,9 +258,12 @@ class AutoGaussianMixtureModel:
             if n_selected==0 and positive_gains[0] > q3 + 1.5 * iqr:
                 n_selected = 1
             selected_labels = positive_labels[:n_selected]
+            self._cum_ratio = cum_ratio
+            self._n_components_candidates = np.arange(base_nc, len(cum_ratio)+base_nc, 1)
         else:
             selected_labels = np.array([], dtype=int)
-
+            self._cum_ratio = None
+            self._n_components_candidates = None
         w3d, m3d, c3d, p3d = self._dimensional_ascension(X, model)
 
         weights     = list(w3d)
@@ -313,8 +316,6 @@ class AutoGaussianMixtureModel:
                                 precisions_init=precisions, 
                                 max_iter=0,
                                 min_iter=0).fit(X)
-        self._cum_ratio = cum_ratio
-        self._n_components_candidates = np.arange(base_nc, len(cum_ratio)+base_nc, 1)
         return self.initial_model, delta_L
     
     def fit(

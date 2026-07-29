@@ -13,16 +13,20 @@ basePath = f"/Users/yuwa/sims.TNG/{run}/output"
 subID = 307486
 snapNum = 99
 snapshot = Snapshot(basePath, snapNum)
-load_particle_fields = {"star": ['Coordinates', 'Velocities', 'Masses']}
+load_particle_fields = {"star": ['Coordinates', 'Velocities', 'Masses'],
+                        "gas":  ['Coordinates', 'Masses'],
+                        "dm":   ['Coordinates'],}
 snapshot.load_particle(ID = subID, load_particle_fields=load_particle_fields)
 snapshot.physical_units()
-snapshot.center()
+snapshot.load_group_catalog(ID = subID)
+snapshot.GC_physical_units()
+snapshot.center(snapshot.group_catalog['SubhaloPos'])
 snapshot.faceon(align_with='star', as_context=False)
 
 data_dir = Path("data")
 filename = data_dir / f"{subID}.ini"
 pot = agama.Potential(str(filename))
-galaxy = calculate_kinematic_param(snapshot, pot)
+galaxy = calculate_kinematic_param(snapshot, None, partType='star')
 X = np.column_stack([galaxy.s['eoemin'], galaxy.s['jzojc'], galaxy.s['jpojc']])
 
 eoemin_index = 0

@@ -43,6 +43,49 @@ def generate_data(n_samples, n_features, weights, means, precisions, covariance_
     X = np.vstack(X)
     return X
 
+def test_speed():
+    n_samples = 50000
+    n_features = 2
+    weights = [0.6, 0.4]
+    means = [[-3, -3], [3, 3]]
+    covariance_type = "full"
+    precisions = {
+        covariance_type: [
+            [[0.5, 0], [0, 0.5]],
+            [[1, 0.3], [0.3, 0.8]]
+        ]
+    }
+    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
+    
+    start = time()
+    GMM_full = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=False)
+    end = time()
+    full_time = end - start
+    
+    start = time()
+    GMM_mini = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=True)
+    end = time()
+    mini_time = end - start
+    
+    n_iter_full = len(GMM_full.lower_bounds_)
+    time_per_iter_full = full_time / n_iter_full
+    time_axis_full = np.arange(n_iter_full) * time_per_iter_full
+    
+    n_iter_mini = len(GMM_mini.lower_bounds_)
+    time_per_iter_mini = mini_time / n_iter_mini
+    time_axis_mini = np.arange(n_iter_mini) * time_per_iter_mini
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(time_axis_full, GMM_full.lower_bounds_, 'b-', linewidth=2, label=f'Full Batch ({full_time:.2f}s)')
+    plt.plot(time_axis_mini, GMM_mini.lower_bounds_, 'r-', linewidth=2, label=f'Mini Batch ({mini_time:.2f}s)')
+    plt.xlabel('Time (s)', fontsize=12)
+    plt.ylabel('Lower Bound', fontsize=12)
+    plt.title('Convergence Comparison: Full Batch vs Mini Batch', fontsize=14)
+    plt.legend(fontsize=11)
+    plt.tight_layout()
+    plt.show()
+
+
 def test_mini_batch():
     n_samples = 50000
     n_features = 2
@@ -361,9 +404,10 @@ def test_initialize_sample_weight():
     plt.show()
 
 if __name__ == "__main__":
-    test_mini_batch()
-    test_initialize_sample_weight()
-    test_sample_weight()
-    test_initialize()
-    test_warm_start()
-    test_add_component()
+    test_speed()
+    #test_mini_batch()
+    #test_initialize_sample_weight()
+    #test_sample_weight()
+    #test_initialize()
+    #test_warm_start()
+    #test_add_component()

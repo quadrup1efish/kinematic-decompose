@@ -92,7 +92,13 @@ def construct_galaxy_potential_model(galaxy):
 
     for name, symmetry, lmax in components:
         pos = getattr(galaxy, name)['pos']
-        mass = getattr(galaxy, name)['mass']
+        if name == 'dm':
+            mass = np.broadcast_to(
+                np.asarray(galaxy.properties['mDM'], dtype=pos.dtype),
+                len(pos)
+            )
+        else:
+            mass = getattr(galaxy, name)['mass']
 
         if len(pos) < 10:
             print(f"Warning: {name} particles too few ({len(pos)}), skipping.")
@@ -102,10 +108,10 @@ def construct_galaxy_potential_model(galaxy):
             pos, mass,
             eps=eps,
             symmetry=symmetry,
-            rmin=0.01,
+            rmin=2*eps,
             rmax=galaxy.R_vir,
             lmax=lmax,
-            gridsizeR=40
+            gridsizeR=30
         )
         potentials.append(pot)
 
@@ -118,6 +124,7 @@ def construct_galaxy_potential_model(galaxy):
 def calculate_kinematic_param(
     galaxy: SimSnap,
     potential = None,
+    partType  = 'star',
     filename: str | None = None
 ) -> SimSnap:
     """
@@ -187,8 +194,13 @@ def calculate_kinematic_param(
         bounds_error=False
     )
     
-    # Compute jc for each particle
-    particle_energies = galaxy['e']
+    particle_data = {
+        'star': galaxy.s,
+        'gas': galaxy.g,
+        'dm': galaxy.dm,
+    }.get(partType, galaxy)
+    particle_energies = particle_data['e']
+
     log_jc = jc_interpolator(np.log10(-particle_energies))
     jc_values = 10**log_jc
     
@@ -202,9 +214,15 @@ def calculate_kinematic_param(
     jc_values = np.maximum(jc_values, circular_angular_momenta[0])
     
     # 6. Store results
-    galaxy['jc'] = SimArray(
+    particle_data = {
+        'star': galaxy.s,
+        'gas': galaxy.g,
+        'dm': galaxy.dm,
+    }.get(partType, galaxy)
+    
+    particle_data['jc'] = SimArray(
         jc_values,
-        units=galaxy.s['pos'].units * galaxy.s['vel'].units
+        units=particle_data['pos'].units * particle_data['vel'].units
     )
     
     return galaxy

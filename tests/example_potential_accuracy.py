@@ -15,7 +15,9 @@ snapNum = 99
 snapshot = Snapshot(basePath, snapNum)
 snapshot.load_particle(ID=subID, load_particle_fields="potential")
 snapshot.physical_units()
-snapshot.center()
+snapshot.load_group_catalog(ID=subID)
+snapshot.GC_physical_units()
+snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
 galaxy = snapshot.container
 
 # Method 1: Multipole expansion

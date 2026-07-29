@@ -386,3 +386,90 @@ def physical_units(self, distance='kpc', velocity='km s^-1', mass='Msol', persis
             self._autoconvert = None
 
 ContainerWithPhysicalUnitsOption.physical_units = physical_units
+
+from pynbody import family
+from pynbody.snapshot import SimSnap
+
+def new(n_particles = 0, order = None, class_ = SimSnap, **families) -> SimSnap:
+    """Create a blank SimSnap, with the specified number of particles.
+
+    Position, velocity and mass arrays are created and filled with zeros.
+
+    By default all particles are taken to be dark matter.
+
+    To specify otherwise, pass in keyword arguments specifying the number of particles for each family, e.g.
+
+    >>> f = new(dm=50, star=25, gas=25)
+
+    The order in which the different families appear in the snapshot is unspecified unless you add an 'order' argument:
+
+    >>> f = new(dm=50, star=25, gas=25, order='star,gas,dm')
+
+    guarantees the stars, then gas, then dark matter particles appear in sequence.
+    """
+
+    if len(families) == 0:
+        families = {'dm': n_particles}
+
+    t_fam = []
+    tot_particles = 0
+
+    if order is None:
+        for k, v in list(families.items()):
+
+            assert isinstance(v, int)
+            t_fam.append((family.get_family(k), v))
+            tot_particles += v
+    else:
+        for k in order.split(","):
+            v = families[k]
+            assert isinstance(v, int)
+            t_fam.append((family.get_family(k), v))
+            tot_particles += v
+
+    x = class_()
+    x._num_particles = tot_particles
+    x._filename = "<created>"
+
+    x._create_arrays(["pos"], 3)
+    #x._create_arrays(["mass"], 1)
+
+    rt = 0
+    for k, v in t_fam:
+        x._family_slice[k] = slice(rt, rt + v)
+        rt += v
+
+    x._decorate()
+    return x
+
+pynbody.new = new
+
+from pynbody.transformation import Transformation
+class GenericTranslation(Transformation):
+
+    def __init__(self, f, arname, shift, description=None):
+        self.shift = shift
+        self.arname = arname
+        super().__init__(f, description=description)
+
+    def _find_targets(self, f):
+        families = []
+        for fam_name in ['gas', 'dm', 'star', 'bh']:
+            fam = getattr(f, fam_name, None)
+            if fam is not None and len(fam) > 0 and self.arname in fam:
+                families.append(fam)
+        return families
+
+    def _apply_to_snapshot(self, f):
+        for target in self._find_targets(f):
+            target[self.arname] += self.shift
+
+    def _unapply_to_snapshot(self, f):
+        for target in self._find_targets(f):
+            target[self.arname] -= self.shift
+
+    def _apply_to_array(self, array):
+        if array.name == self.arname:
+            array += self.shift
+
+pynbody.transformation.GenericTranslation = GenericTranslation
