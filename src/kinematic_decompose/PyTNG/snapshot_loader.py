@@ -437,7 +437,13 @@ class Snapshot():
             return [int(ids)]
 
         if isinstance(ids, Iterable) and not isinstance(ids, (str, bytes)):
-            return [int(i) for i in ids if isinstance(i, (int, np.integer))]
+            parsed = []
+            for i in ids:
+                if isinstance(i, (int, np.integer)):
+                    parsed.append(int(i))
+                else:
+                    raise TypeError(f"Invalid ID element in iterable: {i!r} (type {type(i).__name__})")
+            return parsed
 
         raise TypeError(f"Invalid ID type: {type(ids)}")
 

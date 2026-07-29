@@ -1,4 +1,5 @@
 import math
+import warnings
 import numpy as np
 from functools import lru_cache
 
@@ -259,6 +260,11 @@ def _shape(self):
         axesnew = (val[order] / np.prod(val)**(1./3))**0.5  # updated axes ratios, normalized so that ax*ay*az=1
         if sum(abs(axesnew-axes))<1e-2: break
         axes    = axesnew 
+    else:
+        warnings.warn(
+            f"Shape tensor did not converge within 100 iterations for {self}",
+            RuntimeWarning,
+        )
     if np.linalg.det(evec)<0: evec *= -1
     if evec[2,2]<0: evec[:,1:3] *= -1
     if evec[1,1]<0: evec[:,0:2] *= -1

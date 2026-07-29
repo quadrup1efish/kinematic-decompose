@@ -1,6 +1,3 @@
-import warnings
-warnings.filterwarnings('ignore')
-
 import matplotlib
 import numpy as np
 from matplotlib import rcParams
@@ -47,7 +44,7 @@ def gaussian_ell(ax, mean, covariance, color):
     ax.add_patch(ellipse)
     ax.scatter(mean[0], mean[1], marker='x', color='k')
 
-def visualize_residual(X, means, covariances, extent):
+def _visualize_residual(X, means, covariances, extent):
     proj = [1,0]
     X_positive = X[X > 0]
     vmin = np.nanpercentile(X_positive, 1)
@@ -518,32 +515,4 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
                     else:
                         im = plot_vlos(ax, particle['pos'], particle['vel'], particle['mass'], size=size, bins=bins) 
     del means, covariances
-    if 'bulge_means' in locals():
-        del bulge_means, bulge_covariances
-    if 'halo_means' in locals():
-        del halo_means, halo_covariances
-    if 'warmdisk_means' in locals():
-        del warmdisk_means, warmdisk_covariances
-    if 'colddisk_means' in locals():
-        del colddisk_means, colddisk_covariances
-    if 'counter_rotate_means' in locals():
-        del counter_rotate_means, counter_rotate_covariances
-    if 'colors_bulge' in locals():
-        del colors_bulge
-    if 'colors_halo' in locals():
-        del colors_halo
-    if 'colors_colddisk' in locals():
-        del colors_colddisk
-    if 'colors_warmdisk' in locals():
-        del colors_warmdisk
-    if 'colors_counter_rotate' in locals():
-        del colors_counter_rotate
-    if 'plot_items' in locals():
-        del plot_items
-    if 'component_map' in locals():
-        del component_map
-    if 'particle' in locals():
-        del particle
-    import gc
-    gc.collect()
     return fig

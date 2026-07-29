@@ -7,7 +7,7 @@ from .mixture import AutoGaussianMixtureModel, util, preprocessing
 from .PyTNG.snapshot_loader import Snapshot
 from .gravity.kinematic_solver import construct_galaxy_potential_model, calculate_kinematic_param
 from .visualize import visualize_decomposition
-from .config import BASEPATH
+from .config import BASEPATH, check_basepath
 
 RCUT_RANGE = [1, 7]
 
@@ -18,14 +18,6 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
     jpojc_index = 2
     X = np.column_stack([galaxy.s['eoemin'], galaxy.s['jzojc'], galaxy.s['jpojc']])
     keep_particle = (galaxy.s['eoemin']<0)&(np.abs(galaxy.s['jzojc'])<1.5)&(galaxy.s['jpojc']<1.5)
-    """
-    eps   = galaxy.properties.get('eps', 0.5)
-    r_min = 2*eps
-    r_max = min(1.1*galaxy.s.r90, 10)
-    step  = 0.5*eps
-    eoemin_cut =  util.get_energy_criterion(pot, galaxy.s['r'][keep_particle], galaxy.s['eoemin'][keep_particle],
-                                            r_min, r_max, step, cut_ratio='auto')
-    """
     sph, _ = util.JEHistogram(galaxy.s['eoemin'][keep_particle], galaxy.s['jzojc'][keep_particle], n_E=25, n_eps=50)
     sph = (sph) & (np.abs(galaxy.s['jzojc'][keep_particle])<=0.5)
     eoemin_cut= util.get_Ecut(galaxy.s['eoemin'][keep_particle][sph], galaxy.s['mass'][keep_particle][sph], M_bin=100, m_bin=25, Mmin=0.1)
@@ -64,6 +56,7 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
                                      structure_properties_output_path=None,
                                      mixture_model_output_path=None):
 
+    check_basepath()
     basePath = f"{BASEPATH}/{run}/output"
 
     if gravity_potential_path is not None:

@@ -1,19 +1,14 @@
 import numpy as np
 from scipy.ndimage import label, sum as ndimage_sum
 
-from .util import *
+from .util import JEHistogram, MAX_RADIUS, hist_bin_fd
 from ._gaussian_mixture import GaussianMixture as GM
-
-def hist_bin_fd(x):
-    iqr = np.subtract(*np.percentile(x, [75, 25]))
-    return 2.0 * iqr * x.size ** (-1.0 / 3.0)
 
 REG_COVAR = 1e-6
 MIN_MAHAL = 0.75
 MIN_WEIGHT = 0.01
 MAX_N_COMPONENTS = 15
 MIN_POINTS = 10
-CBIC = -0.1
 BF = 0.951
 
 class AutoGaussianMixtureModel:
