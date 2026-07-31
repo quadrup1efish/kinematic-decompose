@@ -656,6 +656,17 @@ class GaussianMixture(BaseMixture):
     verbose_interval : int, default=10
         Number of iteration done before the next print.
 
+    batch_size : int, default=10240
+        The size of each mini-batch. Only used when `fit()` is called with
+        ``use_mini_batch=True``.
+
+    window_size : int or None, default=None
+        Size of the sliding median window used for mini-batch convergence
+        detection. The median is further smoothed by a short mean window of
+        length 3 for residual jitter. If None, automatically computed as
+        ``max(3, min(10, ceil(n_samples / batch_size)))``.
+        Only used when ``use_mini_batch=True``.
+
     Attributes
     ----------
     weights_ : array-like of shape (n_components,)
@@ -779,6 +790,7 @@ class GaussianMixture(BaseMixture):
         random_state=None,
         warm_start=False,
         batch_size=10240,
+        window_size=None,
         verbose=0,
         verbose_interval=10,
     ):
@@ -793,6 +805,7 @@ class GaussianMixture(BaseMixture):
             random_state=random_state,
             warm_start=warm_start,
             batch_size=batch_size,
+            window_size=window_size,
             verbose=verbose,
             verbose_interval=verbose_interval,
         )

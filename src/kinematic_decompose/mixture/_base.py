@@ -5,6 +5,7 @@
 
 import warnings
 from abc import ABCMeta, abstractmethod
+from collections import deque
 from contextlib import nullcontext
 from numbers import Integral, Real
 from time import time
@@ -47,6 +48,7 @@ def _check_shape(param, param_shape, name):
 
 
 class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
+    _MEAN_SMOOTHING = 3
     """Base class for mixture models.
 
     This abstract class specifies an interface for all mixture classes and
@@ -80,6 +82,7 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         random_state,
         warm_start,
         batch_size,
+        window_size,
         verbose,
         verbose_interval,
     ):
@@ -93,6 +96,7 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         self.random_state = random_state
         self.warm_start = warm_start
         self.batch_size = batch_size
+        self.window_size = window_size
         self.verbose = verbose
         self.verbose_interval = verbose_interval
 
@@ -260,6 +264,11 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
 
         # if we enable warm_start, we will have a unique initialisation
         do_init = not (self.warm_start and hasattr(self, "_initialized"))# and hasattr(self, "converged_"))
+        # resolve effective window_size (local copy, don't mutate self.window_size)
+        if use_mini_batch and self.window_size is None:
+            _window_size = max(3, min(10, int(np.ceil(n_samples / self.batch_size))))
+        else:
+            _window_size = self.window_size
         n_init = self.n_init if do_init else 1
 
         max_lower_bound = -xp.inf
@@ -277,9 +286,10 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                 if not hasattr(self, "_perm") or do_init:
                     self._perm = np.random.permutation(n_samples)
                     self._cursor = 0
-                
-                alpha=0.2
-                lower_bound = -xp.inf if do_init else self.lower_bound_
+
+                lb_window = deque(maxlen=_window_size)
+                mean_window = deque(maxlen=self._MEAN_SMOOTHING)
+                prev_smoothed_lb = -xp.inf
                 current_lower_bounds = []
 
                 if self.max_iter == 0:
@@ -288,7 +298,6 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                 else:
                     converged = False
                     for n_iter in range(1, self.max_iter + 1):
-                        prev_lower_bound = lower_bound
 
                         if self._cursor + self.batch_size > n_samples:
                             self._perm = np.random.permutation(n_samples)
@@ -301,24 +310,30 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
 
                         log_prob_norm, log_resp = self._e_step(mini_X, mini_sample_weight, xp=xp)
                         self._m_step(mini_X, log_resp, sample_weight=mini_sample_weight, xp=xp)
-                        lower_bound = self._compute_lower_bound(log_resp, log_prob_norm)
+                        raw_lb = self._compute_lower_bound(log_resp, log_prob_norm)
 
-                        if prev_lower_bound > -xp.inf:
-                            lower_bound = alpha * lower_bound + (1 - alpha) * prev_lower_bound
+                        # median removes spike outliers; short mean smooths residual jitter
+                        lb_window.append(raw_lb)
+                        if len(lb_window) == _window_size:
+                            median_lb = float(np.median(lb_window))
+                            mean_window.append(median_lb)
+                            smoothed_lb = float(np.mean(mean_window))
+                            current_lower_bounds.append(smoothed_lb)
 
-                        current_lower_bounds.append(lower_bound)
+                            if prev_smoothed_lb > -xp.inf and len(mean_window) == self._MEAN_SMOOTHING:
+                                change = smoothed_lb - prev_smoothed_lb
+                                self._print_verbose_msg_iter_end(n_iter, change)
+                                if abs(change) < self.tol and n_iter >= self.min_iter:
+                                    converged = True
+                                    break
+                            prev_smoothed_lb = smoothed_lb
+                        else:
+                            current_lower_bounds.append(raw_lb)
 
-                        change = lower_bound - prev_lower_bound
-                        self._print_verbose_msg_iter_end(n_iter, change)
+                    self._print_verbose_msg_init_end(prev_smoothed_lb, converged)
 
-                        if abs(change) < self.tol and n_iter >= self.min_iter:
-                            converged = True
-                            break
-
-                    self._print_verbose_msg_init_end(lower_bound, converged)
-
-                    if lower_bound > max_lower_bound or max_lower_bound == -xp.inf:
-                        max_lower_bound = lower_bound
+                    if prev_smoothed_lb > max_lower_bound or max_lower_bound == -xp.inf:
+                        max_lower_bound = prev_smoothed_lb
                         best_params = self._get_parameters()
                         best_n_iter = n_iter
                         best_lower_bounds = current_lower_bounds

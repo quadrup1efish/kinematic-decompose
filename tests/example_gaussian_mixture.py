@@ -44,7 +44,7 @@ def generate_data(n_samples, n_features, weights, means, precisions, covariance_
     return X
 
 def test_speed():
-    n_samples = 50000
+    n_samples = 100000
     n_features = 2
     weights = [0.6, 0.4]
     means = [[-3, -3], [3, 3]]
@@ -58,12 +58,12 @@ def test_speed():
     X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
     
     start = time()
-    GMM_full = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=False)
+    GMM_full = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=100).fit(X, use_mini_batch=False)
     end = time()
     full_time = end - start
     
     start = time()
-    GMM_mini = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=True)
+    GMM_mini = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=100).fit(X, use_mini_batch=True)
     end = time()
     mini_time = end - start
     
