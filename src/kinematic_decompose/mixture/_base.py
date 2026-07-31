@@ -502,14 +502,15 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         return xp.argmax(self._estimate_weighted_log_prob(X), axis=1)
     
     def soft_predict(self, X, seed=42):
+        X = validate_data(self, X, reset=False)
         xp, _ = get_namespace(X)
         rng = xp.random.default_rng(seed)
-        _, log_resp = self._e_step(X)
+        _, log_resp = self._estimate_log_prob_resp(X, xp=xp)
         resp = xp.exp(log_resp)
         probs = resp / resp.sum(axis=1, keepdims=True)
         cum_probs = xp.cumsum(probs, axis=1)
         rand_vals = rng.random(probs.shape[0])
-        labels = (cum_probs >= rand_vals[:, xp.newaxis]).argmax(axis=1) 
+        labels = (cum_probs >= rand_vals[:, xp.newaxis]).argmax(axis=1)
         return labels
     
     def predict_proba(self, X):
