@@ -4,6 +4,8 @@
 
 本工具提供了一套端到端的管线（pipeline），用于将宇宙学模拟（如 IllustrisTNG）中的星系自动分解为五个运动学子结构：**冷盘**（cold disk）、**温盘**（warm disk）、**核球**（bulge）、**恒星晕**（stellar halo）和**反向旋转盘**（counter-rotating disk），核心算法为**自适应高斯混合模型（AutoGaussianMixtureModel）**。
 
+![分解效果示例](image/example_decomposition.png)
+
 ## 概述
 
 传统的运动学分解方法（如 Abadi + JEHistogram）依赖人为设定的能量和角动量截断阈值。本工具用**自适应的数据驱动型高斯混合模型**替代了硬截断：
@@ -22,6 +24,10 @@
 | $\epsilon/|\epsilon|_{\max}$ | $E/|E_{\min}|$ | 归一化轨道能量；$<0$ 表示束缚粒子 |
 | $j_z/j_c$ | $L_z / L_c(E)$ | 圆度：角动量 $z$ 分量与同能量下圆轨道角动量之比 |
 | $j_p/j_c$ | $L_p / L_c(E)$ | 垂直方向角动量分数 |
+
+<p align="center">
+  <img src="image/phase_space_example.png" width="600" alt="相空间分解示例"/>
+</p>
 
 ### 子结构成分
 
@@ -161,7 +167,9 @@ galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_me
 visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
 ```
 
-## 算法原理：AutoGaussianMixtureModel
+## 算法原理：自适应高斯混合模型（AutoGMM）
+
+本包的核心是一个**自适应** GMM：不对分量数量做先验假设，而是**从数据中自动发现运动学结构**——先分类形态，再自动检测当前混合模型欠拟合的残差相空间区域并加入新分量，直到模型充分拟合。**分量数量由数据决定，而非人工指定**。
 
 `mixture/_gaussian_mixture.py` 中的自定义 `GaussianMixture` 在 scikit-learn 的基础上增加了以下功能：
 
@@ -207,24 +215,25 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 - **面密度**（中间行）：各成分的恒星面密度投影图（$\log_{10} \Sigma_*$），包含正面和侧向视图。
 - **视向速度图**（底部行）：各成分的恒星视向速度图（$v_{\text{los}} / \sqrt{v_{\text{los}}^2 + 3\sigma_{\text{los}}^2}$）。
 
-## Mini-Batch 训练与性能
+## 性能：Mini-Batch vs Full-Batch EM
 
-`GaussianMixture` 支持 mini-batch EM，且**单次迭代的耗时与粒子总数近似无关**（只依赖 `batch_size`，而非 N）。三个关键优化：
+`GaussianMixture` 支持 **单次迭代耗时与粒子总数无关的 mini-batch EM**：成本只依赖 `batch_size`，而非 N。Full-batch EM 每次迭代必须扫描全部粒子（每迭代 O(N)）；mini-batch EM 只在固定大小的批次上计算（每迭代 O(batch)）。
 
-1. **有界子采样初始化** — 初始参数不再扫描全部 N 个粒子，而是在随机子样本上估计，子样本大小由统计功效公式给出：
-   $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
-   （协方差 MLE 的相对标准误 ≈ 1/√n，即初始协方差估计约 5% 相对精度）。初始化成本 O(S·K·d)，当 N > S 时与 N 无关。
-2. **有放回批次采样** — 每个 mini-batch 用 `randint(0, N, batch_size)` 直接抽取（每迭代 O(batch)），替代维护大小为 N 的完整置换数组（每 epoch O(N)）。该方案统计无偏；收敛后 lower bound 与无放回方案偏差 < 0.5%。
-3. **消除冗余 E-step** — `fit()` 跳过只为计算标签的尾部全量 E-step；`decompose()` 在软标签与概率之间共享一次全量 E-step；2D→3D 升维的加权均值/协方差同样使用有界子采样，并以批量 `einsum` 全向量化。
+| | Full-batch | Mini-batch |
+|---|---|---|
+| 单次迭代成本 | O(N) | **O(batch)——与 N 无关** |
+| 单次迭代耗时 @ N = 10⁴ | 1.5 ms | 0.4 ms |
+| 单次迭代耗时 @ N = 10⁷ | 3.79 s | **1.9 ms（约快 2000×）** |
+| N 从 10⁴ 增至 10⁷（×1000）的成本增长 | ×2500 | **×5** |
+| 收敛后 lower bound | 基准 | 偏差 < 0.5%（迭代数一致） |
 
-| 指标 | 优化前 | 优化后 |
-|------|--------|--------|
-| Pipeline 总耗时（TNG50-1，514 万恒星） | 37.3 s | **22.1 s（−41%）** |
-| Mini-batch 单次迭代耗时 @ N = 10⁷ | 249 ms | **1.9 ms** |
-| full 与 mini 的 lower bound 偏差 | — | < 0.5% |
-| PDF 图体积 | 数十 MB | **0.4 MB**（位图化） |
+核心机制是**基于统计功效的有界子采样初始化**：初始参数在大小为
 
-缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、full / 当前 / 旧 mini-batch 三条曲线，右侧轴显示 full/mini 的 lower bound 相对误差）。
+$$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
+
+的随机子样本上估计（协方差估计量约 5% 相对精度），初始化成本同样与 N 无关。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、full / 当前 / 旧 mini-batch 三条曲线，右侧轴显示 full/mini 的 lower bound 相对误差）。
+
+除 EM 外，端到端 pipeline（TNG50-1、514 万恒星——自动分量选择、运动学分解、出版级可视化）总耗时 **22 s**（原 37 s）。
 
 ## 可视化风格
 
