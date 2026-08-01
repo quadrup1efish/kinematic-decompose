@@ -10,16 +10,16 @@ from scipy.stats import binned_statistic_2d
 
 available_fonts = [f.name for f in fm.fontManager.ttflist]
 
-# Unified Nature-journal figure style (Nature/Science tier): sans-serif
-# Helvetica/Arial, restrained sizes, hairline axes, no grid. Applied
+# Unified Nature-journal figure style (Nature/Science tier): serif
+# Times New Roman, restrained sizes, hairline axes, no grid. Applied
 # project-wide so every figure (decomposition panels and test figures)
 # shares one look.
 NATURE_STYLE = {
-    'font.family': 'sans-serif',
-    'font.sans-serif': ['Helvetica', 'Arial', 'DejaVu Sans'],
+    'font.family': 'serif',
+    'font.serif': ['Times New Roman', 'Times', 'DejaVu Serif'],
     'font.style': 'normal',
     'font.weight': 'normal',
-    'mathtext.fontset': 'dejavusans',
+    'mathtext.fontset': 'stix',
     'font.size': 12,
     'axes.labelsize': 13,
     'xtick.labelsize': 11,

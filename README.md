@@ -10,8 +10,8 @@ This package provides an end-to-end pipeline for decomposing simulated galaxies 
 
 Traditional kinematic decomposition methods (e.g., Abadi + JEHistogram) rely on ad-hoc energy and angular momentum cuts. This package replaces hard cuts with an **adaptive, data-driven Gaussian Mixture Model** that:
 
-1. **Automatically classifies morphology** — uses a 3-component GMM to distinguish disks from spheroids based on the $\epsilon$–$j_z/j_c$ phase space.
-2. **Initializes physically motivated components** — separates bulge, stellar halo, cold disk, warm disk, and counter-rotating disk using energy ($\epsilon/|\epsilon|_{\max}$) and circularity ($j_z/j_c$) thresholds.
+1. **Automatically classifies morphology** — uses a 3-component GMM to distinguish disks from spheroids based on the $e/|e_{\min}|$–$j_z/j_c$ phase space.
+2. **Initializes physically motivated components** — separates bulge, stellar halo, cold disk, warm disk, and counter-rotating disk using energy ($e/|e_{\min}|$) and circularity ($j_z/j_c$) thresholds.
 3. **Detects residual underfitting** — uses a 2D histogram-based $\Delta L$ criterion to identify phase-space regions where the current mixture under-represents the data and adds new components automatically.
 4. **Supports soft and hard classification** — assigns each star particle a probabilistic or hard label for the five kinematic categories.
 
@@ -21,7 +21,7 @@ The decomposition operates in three dimensions of the stellar orbital phase spac
 
 | Variable | Definition | Description |
 |----------|-----------|-------------|
-| $\epsilon/|\epsilon|_{\max}$ | $E/|E_{\min}|$ | Bounded orbital energy (normalised); $< 0$ for bound particles |
+| $e/|e_{\min}|$ | $E / |E_{\min}|$ | Orbital energy normalised by the magnitude of the minimum (most bound) energy; bound particles lie in $[-1, 0)$ |
 | $j_z/j_c$ | $L_z / L_c(E)$ | Circularity: z-component of angular momentum over circular angular momentum at same energy |
 | $j_p/j_c$ | $L_p / L_c(E)$ | Perpendicular angular momentum fraction |
 
@@ -34,12 +34,12 @@ The decomposition operates in three dimensions of the stellar orbital phase spac
 | Component | Phase-space signature |
 |-----------|----------------------|
 | **Cold disk** | $j_z/j_c > 0.85$ |
-| **Warm disk** | $j_z/j_c > \text{cut}_{\mathrm{circ}}$ |
-| **Bulge** | $\epsilon/|\epsilon|_{\max} < \text{cut}_{\mathrm{E}}$ and $|j_z/j_c| < \text{cut}_{\mathrm{circ}}$ |
-| **Stellar halo** | $\epsilon/|\epsilon|_{\max} > \text{cut}_{\mathrm{E}}$ and $|j_z/j_c| < \text{cut}_{\mathrm{circ}}$ |
-| **Counter-rotating disk** | $j_z/j_c < -\text{cut}_{\mathrm{circ}}$ |
+| **Warm disk** | $j_z/j_c > 0.5$ |
+| **Bulge** | $e/|e_{\min}| < e_{\mathrm{cut}}$ and $|j_z/j_c| < 0.5$ |
+| **Stellar halo** | $e/|e_{\min}| > e_{\mathrm{cut}}$ and $|j_z/j_c| < 0.5$ |
+| **Counter-rotating disk** | $j_z/j_c < -0.5$ |
 
-`cut_E` and `cut_circ` are determined adaptively from the gravitational potential and the stellar energy distribution.
+$e_{\mathrm{cut}}$ is determined adaptively from the gravitational potential and the stellar energy distribution; the circularity threshold is a fixed 0.5.
 
 ## Project Structure
 
@@ -179,12 +179,12 @@ The custom `GaussianMixture` in `mixture/_gaussian_mixture.py` extends scikit-le
 
 ### AutoGMM Fitting Stages
 
-1. **Morphology classification** — `_morphology_class()`: fits a 3-component GMM on ($\epsilon/|\epsilon|_{\max}$, $j_z/j_c$). If any component has $\mu_{j_z/j_c} > \text{cut}$, the galaxy is classified as `'disk'`; otherwise `'spheroid'`.
+1. **Morphology classification** — `_morphology_class()`: fits a 3-component GMM on ($e/|e_{\min}|$, $j_z/j_c$). If any component has $\mu_{j_z/j_c} > \text{cut}$, the galaxy is classified as `'disk'`; otherwise `'spheroid'`.
 
 2. **Physical initialisation** — `_initialize()`: maps GMM components to bulge, halo, disk subgroups using energy and circularity cuts. Falls back to data-driven statistics when a morphological subgroup is missing.
 
 3. **Residual component detection** — `_find_residual_component()`: the key innovation. It:
-   - Constructs a 2D histogram of the true data in ($\epsilon/|\epsilon|_{\max}$, $j_z/j_c$)
+   - Constructs a 2D histogram of the true data in ($e/|e_{\min}|$, $j_z/j_c$)
    - Computes the model-predicted density from the current GMM
    - Calculates $\Delta L = \text{true}\cdot\log(\text{true}/\text{model}) - (\text{true} - \text{model})$ (a likelihood-ratio residual)
    - Thresholds outlier regions and estimates new Gaussian components for each
@@ -210,7 +210,7 @@ The custom `GaussianMixture` in `mixture/_gaussian_mixture.py` extends scikit-le
 
 `visualize.py` generates publication-quality multipanel figures:
 
-- **Phase space** (top row): 2D histograms of ($j_z/j_c$, $\epsilon/|\epsilon|_{\max}$), ($j_z/j_c$, $j_p/j_c$), and ($j_p/j_c$, $\epsilon/|\epsilon|_{\max}$) with Gaussian ellipses colour-coded by component type.
+- **Phase space** (top row): 2D histograms of ($j_z/j_c$, $e/|e_{\min}|$), ($j_z/j_c$, $j_p/j_c$), and ($j_p/j_c$, $e/|e_{\min}|$) with Gaussian ellipses colour-coded by component type.
 - **Surface density** (middle row): projected stellar surface density maps ($\log_{10} \Sigma_*$) for each component, with face-on and edge-on views.
 - **LOS velocity** (bottom row): line-of-sight stellar velocity maps ($v_{\text{los}} / \sqrt{v_{\text{los}}^2 + 3\sigma_{\text{los}}^2}$).
 
@@ -234,7 +234,7 @@ The key enabler is a **statistically-grounded bounded initialisation**: initial 
 
 $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
 
-derived from the statistical power of the covariance estimator (≈5% relative precision of the initial covariance), so the initialisation cost is also independent of N. The scaling behaviour is verified by `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, full / current / old mini-batch curves, with the full/mini lower-bound error on the right axis).
+derived from the statistical power of the covariance estimator (≈5% relative precision of the initial covariance), so the initialisation cost is also independent of N. The scaling behaviour is verified by `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, mini-batch repeated 10× per N: median curve with 16–84% spread bands). The right axis shows the **Bayes factor** BF = exp(ΔLB) of the full- vs mini-batch converged solutions on a log scale, with the y-range spanning the Jeffreys "no substantial evidence" region [0.1, 10]. The measured BF ≈ 1 (0.96–1.01 in this run) — **no evidence of a difference**: the two convergence paths are statistically indistinguishable, not merely close.
 
 Beyond EM, the end-to-end pipeline (TNG50-1, 5.1M stars — automatic component selection, kinematic decomposition, publication-quality figures) runs in **22 s**, down from 37 s.
 

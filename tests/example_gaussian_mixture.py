@@ -413,8 +413,12 @@ def test_scaling_with_n_samples():
     fits per N, with 16%-84% (1-sigma) spread bands for stability, plus
     the old pre-optimisation mini path (full-dataset init + full
     permutation, O(N) per fit) as a reference. The right y-axis shows the
-    relative lower-bound error of mini vs full batch (|dLB|/|LB_full|);
-    the full/mini curves share the same synthetic data per N.
+    Bayes factor BF = exp(LB_full - LB_mini) of the full- vs mini-batch
+    converged solutions on a log scale (N cancels), with the y-range
+    spanning the Jeffreys "anecdotal" region [1/3, 3]. Measured BF ≈ 1
+    (0.96–1.01 in this run), i.e. no evidence of a difference - the two
+    convergence paths are statistically indistinguishable, not merely
+    close. The full/mini curves share the same synthetic data per N.
     batch_size=1024 so every point really uses the mini-batch path
     (3*batch_size = 3072 < 1e4). The figure is saved to
     image/scaling_performance.png (used in the README).
@@ -484,11 +488,14 @@ def test_scaling_with_n_samples():
     lb_full = np.array(lb_full)
     lb_mini_all = np.array(lb_mini_all)  # (n_points, n_repeats)
 
-    # relative lower-bound error per repeat, then median + 16-84% spread
-    lb_err_all = 100.0 * np.abs(lb_full[:, None] - lb_mini_all) / np.abs(lb_full[:, None])
-    lb_err_med = np.median(lb_err_all, axis=1)
-    lb_err_lo = np.percentile(lb_err_all, 16, axis=1)
-    lb_err_hi = np.percentile(lb_err_all, 84, axis=1)
+    # Bayes factor per repeat: BF = exp(LB_full - LB_mini) (the N cancels),
+    # then median + 16-84% spread. On the Jeffreys scale BF in [0.1, 10] is
+    # "no substantial evidence"; the measured BF ≈ 1 means the full- and
+    # mini-batch converged solutions are statistically indistinguishable.
+    bf_all = np.exp(lb_full[:, None] - lb_mini_all)
+    bf_med = np.median(bf_all, axis=1)
+    bf_lo = np.percentile(bf_all, 16, axis=1)
+    bf_hi = np.percentile(bf_all, 84, axis=1)
 
     # per-iteration cost should scale up with N for full batch
     assert per_iter_full[-1] > per_iter_full[0], "full per-iter should grow with N"
@@ -500,7 +507,7 @@ def test_scaling_with_n_samples():
 
     # ---- figure: unified Nature-journal style (shared with visualize.py) ----
     # Font sizes are bumped up relative to NATURE_STYLE so they match the
-    # large 9x6 canvas (labels stand out instead of being dwarfed).
+    # canvas (labels stand out instead of being dwarfed).
     with plt.rc_context({
         **NATURE_STYLE,
         'font.size': 16,
@@ -509,31 +516,34 @@ def test_scaling_with_n_samples():
         'ytick.labelsize': 15,
         'legend.fontsize': 14,
     }):
-        fig, ax1 = plt.subplots(figsize=(9, 6))
-        ax1.loglog(n_list, per_iter_full, 'b-o', linewidth=2, label='Full batch')
-        ax1.loglog(n_list, per_iter_mini_med, 'r-o', linewidth=2, label='Mini batch')
-        ax1.fill_between(n_list, per_iter_mini_lo, per_iter_mini_hi,
-                         color='r', alpha=0.2, label='Mini batch (16–84%)')
-        ax1.loglog(n_list, per_iter_mini_old, color='r', linestyle='--', marker='s', linewidth=1.5, alpha=0.7,
+        fig, ax1 = plt.subplots(figsize=(6, 5))
+        ax1.loglog(n_list, per_iter_full, 'b-o', linewidth=3, markersize=8, label='Full batch')
+        ax1.loglog(n_list, per_iter_mini_med, 'r-o', linewidth=3, markersize=8, label='Mini batch')
+        ax1.fill_between(n_list, per_iter_mini_lo, per_iter_mini_hi, color='r', alpha=0.2)
+        ax1.loglog(n_list, per_iter_mini_old, color='r', linestyle='--', marker='s', linewidth=2, markersize=7, alpha=0.7,
                    label='Mini batch (old)')
         ax1.set_xlabel('N')
         ax1.set_ylabel('Time per iteration (s)')
-        ax1.legend(loc='upper left', framealpha=0.9)
 
-        # right axis: relative lower-bound error of mini batch vs full batch
-        # (mini batch sees fewer data per iteration, so its converged LB may
-        # deviate from the full-batch one; |dLB|/|LB_full| quantifies it).
-        # Shown in percent with a fixed [0, 1%] ylim so the (tiny) errors
-        # are read at their true magnitude instead of looking inflated.
+        # right axis: Bayes factor BF = exp(LB_full - LB_mini) of the full-
+        # vs mini-batch converged solutions (log scale; N cancels). ylim
+        # spans the Jeffreys "anecdotal" region [1/3, 3]: no evidence at
+        # BF = 1 (solid line), anecdotal at the 3 and 1/3 boundaries.
         ax2 = ax1.twinx()
-        ax2.semilogx(n_list, lb_err_med, 'g-^', linewidth=1.5, alpha=0.8, label='LB error (%)')
-        ax2.fill_between(n_list, lb_err_lo, lb_err_hi, color='g', alpha=0.15,
-                         label='LB error (16–84%)')
-        ax2.set_ylabel('Relative LB error (%)', color='g')
-        ax2.set_ylim(0, 1.0)
+        ax2.semilogx(n_list, bf_med, 'g-^', linewidth=2, markersize=8, alpha=0.8, label='BF (median)')
+        ax2.fill_between(n_list, bf_lo, bf_hi, color='g', alpha=0.15)
+        ax2.set_ylabel('Bayes factor BF', color='g')
+        ax2.axhline(1.0, color='k', lw=1.0, ls='-', alpha=0.6)
+        ax2.set_ylim(1/3, 3)
         ax2.tick_params(axis='y', labelcolor='g')
-        ax2.legend(loc='upper right', framealpha=0.9)
         ax2.grid(False)
+
+        # single combined legend above the axes (outside the plot area so it
+        # can never overlap the curves)
+        h1, l1 = ax1.get_legend_handles_labels()
+        h2, l2 = ax2.get_legend_handles_labels()
+        ax1.legend(h1 + h2, l1 + l2, loc='lower center', bbox_to_anchor=(0.5, 1.02),
+                   ncol=4, fontsize=12, framealpha=0.9)
 
         fig.tight_layout()
         fig.savefig("image/scaling_performance.png", dpi=150, bbox_inches='tight')

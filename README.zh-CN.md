@@ -10,8 +10,8 @@
 
 传统的运动学分解方法（如 Abadi + JEHistogram）依赖人为设定的能量和角动量截断阈值。本工具用**自适应的数据驱动型高斯混合模型**替代了硬截断：
 
-1. **自动分类星系形态** — 在 ($\epsilon/|\epsilon|_{\max}$, $j_z/j_c$) 相空间上拟合 3 分量 GMM，自动判断星系是盘主导还是球状主导。
-2. **物理启发的初始化** — 利用能量 ($\epsilon/|\epsilon|_{\max}$) 和圆度 ($j_z/j_c$) 阈值，为核球、恒星晕、冷盘、温盘和反向旋转盘分别初始化高斯分量。
+1. **自动分类星系形态** — 在 ($e/|e_{\min}|$, $j_z/j_c$) 相空间上拟合 3 分量 GMM，自动判断星系是盘主导还是球状主导。
+2. **物理启发的初始化** — 利用能量 ($e/|e_{\min}|$) 和圆度 ($j_z/j_c$) 阈值，为核球、恒星晕、冷盘、温盘和反向旋转盘分别初始化高斯分量。
 3. **残差自动检测** — 利用基于 2D 直方图的 $\Delta L$ 判据，自动识别当前混合模型拟合不足的相空间区域，并新增高斯分量。
 4. **支持软/硬分类** — 可以概率赋值或硬赋值两种方式将每颗恒星标记到五个运动学类别。
 
@@ -21,7 +21,7 @@
 
 | 变量 | 定义 | 说明 |
 |------|------|------|
-| $\epsilon/|\epsilon|_{\max}$ | $E/|E_{\min}|$ | 归一化轨道能量；$<0$ 表示束缚粒子 |
+| $e/|e_{\min}|$ | $E/|E_{\min}|$ | 轨道能量除以最小（最束缚）能量的绝对值；束缚粒子落在 $[-1, 0)$ |
 | $j_z/j_c$ | $L_z / L_c(E)$ | 圆度：角动量 $z$ 分量与同能量下圆轨道角动量之比 |
 | $j_p/j_c$ | $L_p / L_c(E)$ | 垂直方向角动量分数 |
 
@@ -34,12 +34,12 @@
 | 成分 | 相空间特征 |
 |------|-----------|
 | **冷盘** (Cold disk) | $j_z/j_c > 0.85$ |
-| **温盘** (Warm disk) | $j_z/j_c > \text{cut}_{\mathrm{circ}}$ |
-| **核球** (Bulge) | $\epsilon/|\epsilon|_{\max} < \text{cut}_{\mathrm{E}}$ 且 $|j_z/j_c| < \text{cut}_{\mathrm{circ}}$ |
-| **恒星晕** (Stellar halo) | $\epsilon/|\epsilon|_{\max} > \text{cut}_{\mathrm{E}}$ 且 $|j_z/j_c| < \text{cut}_{\mathrm{circ}}$ |
-| **反向旋转盘** (Counter-rotating disk) | $j_z/j_c < -\text{cut}_{\mathrm{circ}}$ |
+| **温盘** (Warm disk) | $j_z/j_c > 0.5$ |
+| **核球** (Bulge) | $e/|e_{\min}| < e_{\mathrm{cut}}$ 且 $|j_z/j_c| < 0.5$ |
+| **恒星晕** (Stellar halo) | $e/|e_{\min}| > e_{\mathrm{cut}}$ 且 $|j_z/j_c| < 0.5$ |
+| **反向旋转盘** (Counter-rotating disk) | $j_z/j_c < -0.5$ |
 
-其中 `cut_E` 和 `cut_circ` 根据引力势和恒星能量分布自适应确定。
+其中 $e_{\mathrm{cut}}$ 根据引力势和恒星能量分布自适应确定；圆度阈值固定为 0.5。
 
 ## 项目结构
 
@@ -180,12 +180,12 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 
 ### AutoGMM 的四个拟合阶段
 
-1. **形态分类** `— _morphology_class()`：在 ($\epsilon/|\epsilon|_{\max}$, $j_z/j_c$) 上拟合 3 分量 GMM。若任一分量的 $\mu_{j_z/j_c} > \text{cut}$，则星系分类为 `'disk'`，否则为 `'spheroid'`。
+1. **形态分类** `— _morphology_class()`：在 ($e/|e_{\min}|$, $j_z/j_c$) 上拟合 3 分量 GMM。若任一分量的 $\mu_{j_z/j_c} > \text{cut}$，则星系分类为 `'disk'`，否则为 `'spheroid'`。
 
 2. **物理初始化** `— _initialize()`：利用能量和圆度阈值将 GMM 分量映射到核球、晕、盘子群。当某个形态子群缺失时，自动退化为基于数据的统计初始化。
 
 3. **残差分量自动检测** `— _find_residual_component()`：核心创新点。
-   - 在 ($\epsilon/|\epsilon|_{\max}$, $j_z/j_c$) 上构建真实数据的 2D 直方图
+   - 在 ($e/|e_{\min}|$, $j_z/j_c$) 上构建真实数据的 2D 直方图
    - 从当前 GMM 计算模型预测密度
    - 计算 $\Delta L = \text{真实}\cdot\log(\text{真实}/\text{模型}) - (\text{真实} - \text{模型})$（似然比残差）
    - 对异常值区域做阈值分割，为每个区域估计新的高斯分量
@@ -211,7 +211,7 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 
 `visualize.py` 生成出版物质量的多面板图表：
 
-- **相空间**（顶部行）：（$j_z/j_c$, $\epsilon/|\epsilon|_{\max}$）、（$j_z/j_c$, $j_p/j_c$）、（$j_p/j_c$, $\epsilon/|\epsilon|_{\max}$）的 2D 直方图，叠加按成分配色的高斯椭圆。
+- **相空间**（顶部行）：（$j_z/j_c$, $e/|e_{\min}|$）、（$j_z/j_c$, $j_p/j_c$）、（$j_p/j_c$, $e/|e_{\min}|$）的 2D 直方图，叠加按成分配色的高斯椭圆。
 - **面密度**（中间行）：各成分的恒星面密度投影图（$\log_{10} \Sigma_*$），包含正面和侧向视图。
 - **视向速度图**（底部行）：各成分的恒星视向速度图（$v_{\text{los}} / \sqrt{v_{\text{los}}^2 + 3\sigma_{\text{los}}^2}$）。
 
@@ -235,7 +235,7 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 
 $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
 
-的随机子样本上估计（协方差估计量约 5% 相对精度），初始化成本同样与 N 无关。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、full / 当前 / 旧 mini-batch 三条曲线，右侧轴显示 full/mini 的 lower bound 相对误差）。
+的随机子样本上估计（协方差估计量约 5% 相对精度），初始化成本同样与 N 无关。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
 
 除 EM 外，端到端 pipeline（TNG50-1、514 万恒星——自动分量选择、运动学分解、出版级可视化）总耗时 **22 s**（原 37 s）。
 
