@@ -66,77 +66,55 @@ def _coldgas(self):
 Some useful function -> r50, R50, z50, t50, Rvir, Vvir, Mvir, Tvir, Spin, AM
 """
 
+def _mass_percentile(self, field: str, percent: float, weight: str = 'mass',
+                     abs_first: bool = False):
+    """Mass-weighted percentile of ``field`` (a single percentile helper).
+
+    Sorts particles by ``field`` and returns its value at the mass
+    percentile ``percent`` (e.g. 0.50 for the half-mass radius).
+
+    Parameters
+    ----------
+    field : str
+        Array name to take the percentile of (e.g. ``'r'``, ``'R'``, ``'z'``).
+    percent : float
+        Mass percentile in [0, 1].
+    weight : str
+        Array used as the percentile weight (default ``'mass'``).
+    abs_first : bool
+        If True, sort by ``|field|`` (used for ``'z'``).
+    """
+    arr = np.abs(self[field]) if abs_first else self[field]
+    if len(arr) == 0:
+        return np.nan
+    sort_idx = np.argsort(arr)
+    cum_mass = np.cumsum(np.asarray(self[weight], dtype=np.float64)[sort_idx])
+    idx = np.searchsorted(cum_mass, cum_mass[-1] * percent)
+    return SimArray(arr[sort_idx][idx], units=self[field].units)
+
+
 def _r(self, weight='mass', percent=0.50):
-    if len(self['r']) == 0: return np.nan
-    r_filtered = self['r']
-    w_filtered = self[weight]
-    sort_idx = np.argsort(r_filtered)
-    r_sorted = r_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    r_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return SimArray(r_sorted[r_idx], units=self['pos'].units)
+    return _mass_percentile(self, 'r', percent, weight)
+
 
 def _r90(self, weight='mass', percent=0.90):
-    if len(self['r']) == 0: return np.nan
-    r_filtered = self['r']
-    w_filtered = self[weight]
-    sort_idx = np.argsort(r_filtered)
-    r_sorted = r_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    r_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return SimArray(r_sorted[r_idx], units=self['pos'].units)
+    return _mass_percentile(self, 'r', percent, weight)
+
 
 def _r25(self, weight='mass', percent=0.25):
-    if len(self['r']) == 0: return np.nan
-    r_filtered = self['r']
-    w_filtered = self[weight]
-    sort_idx = np.argsort(r_filtered)
-    r_sorted = r_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    r_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return SimArray(r_sorted[r_idx], units=self['pos'].units)
+    return _mass_percentile(self, 'r', percent, weight)
+
 
 def _R(self, weight='mass', percent=0.50):
-    if len(self['R']) == 0: return np.nan
-    r_filtered = self['R']
-    w_filtered = self[weight]
-    sort_idx = np.argsort(r_filtered)
-    r_sorted = r_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    r_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return  SimArray(r_sorted[r_idx], units=self['pos'].units)
+    return _mass_percentile(self, 'R', percent, weight)
+
 
 def _z(self, weight='mass', percent=0.50):
-    if len(self['z']) == 0: return np.nan
-    z_filtered = self['z'].abs()
-    w_filtered = self[weight]
-    sort_idx = np.argsort(z_filtered)
-    z_sorted = z_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    z_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return  SimArray(z_sorted[z_idx], units=self['pos'].units)
+    return _mass_percentile(self, 'z', percent, weight, abs_first=True)
+
 
 def _t(self, weight='mass', percent=0.50):
-    if len(self['tform']) == 0: return np.nan
-    t_filtered = self['tform']
-    w_filtered = self[weight]
-    sort_idx = np.argsort(t_filtered)
-    t_sorted = t_filtered[sort_idx]
-    w_sorted = w_filtered[sort_idx]
-    cum_mass = np.cumsum(w_sorted)
-    total_mass = cum_mass[-1]
-    t_idx = np.searchsorted(cum_mass, total_mass * percent)
-    return SimArray(t_sorted[t_idx], units=self['tform'].units)
+    return _mass_percentile(self, 'tform', percent, weight)
 
 def _vel_disp(self):
     if len(self['r']) == 0: return np.nan 
@@ -195,10 +173,9 @@ def _mvir(self):
 
 def _rvir(self):
     sim = self.ancestor
-    overden = 200
     rho_c = rho_crit(sim, sim.properties['z'])           
     mvir  = self.M_vir          
-    rvir = (3 * mvir / (4 * np.pi * overden * rho_c))**(1/3)
+    rvir = (3 * mvir / (4 * np.pi * _VIRIAL_OVERDENSITY * rho_c))**(1/3)
     return rvir.in_units('kpc')
 
 def _vvir(self):
@@ -206,7 +183,7 @@ def _vvir(self):
     return vvir.in_units('km s**-1')
 
 def _Tvir(self):
-    mu = 0.62
+    mu = _TVIR_MEAN_MOLECULAR_WEIGHT
     mp = units.m_p
     kb = units.k
     T = mu * mp * self.V_vir**2 / (2 * kb)
@@ -243,22 +220,29 @@ def _tff(self):
 def _rcirc(self):
     return (np.sqrt(2) * self.spin * self.r_vir).in_units('kpc')
 
+# --- physical constants / tolerances (named instead of magic numbers) ---
+_VIRIAL_OVERDENSITY = 200   # Delta_vir used for R_vir (spherical top-hat)
+_TVIR_MEAN_MOLECULAR_WEIGHT = 0.62  # primordial plasma mu (T_vir formula)
+_TFORM_FALLBACK_AGE = 14.0  # Gyr, assigned when tform == 0 (no star formation)
+_SHAPE_MAX_ITER = 100       # inertia-tensor iteration cap
+_SHAPE_CONV_TOL = 1e-2      # ||axes_new - axes|| convergence threshold
+
 def _shape(self):
     pos  = self['pos']
     mass = self['mass']
     rmax = np.inf
     evec = np.eye(3)   # initial guess for axes orientation
     axes = np.ones(3)  # and axes ratios; these are updated at each iteration
-    for _ in range(100):
+    for _ in range(_SHAPE_MAX_ITER):
         # use particles within the elliptical radius less than the provided value
         ellpos  = pos.dot(evec) / axes
-        filter  = np.sum(ellpos**2, axis=1) < rmax**2
-        inertia = pos[filter].T.dot(pos[filter] * mass[filter,None])
+        sel     = np.sum(ellpos**2, axis=1) < rmax**2
+        inertia = pos[sel].T.dot(pos[sel] * mass[sel,None])
         val,vec = np.linalg.eigh(inertia)
         order   = np.argsort(-val)  # sort axes in decreasing order
         evec    = vec[:,order]         # updated axes directions
         axesnew = (val[order] / np.prod(val)**(1./3))**0.5  # updated axes ratios, normalized so that ax*ay*az=1
-        if sum(abs(axesnew-axes))<1e-2: break
+        if sum(abs(axesnew-axes))<_SHAPE_CONV_TOL: break
         axes    = axesnew 
     else:
         warnings.warn(

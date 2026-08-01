@@ -22,10 +22,6 @@ def e(sim):
     return sim['phi']+sim['ke']
 
 @pynbody.derived_array
-def e_over_emin(sim):
-    return sim['e']/sim['e'].min().abs()
-
-@pynbody.derived_array
 def eoemin(sim):
     return sim['e']/sim['e'].min().abs()
 
@@ -61,7 +57,6 @@ def tform(
     """
     if 'aform' not in sim:
         print('need aform to cal: GFM_StellarFormationTime')
-    import numpy as np
 
     omega_m = sim.properties['omegaM0']
     a = sim['aform'].view(np.ndarray).copy()

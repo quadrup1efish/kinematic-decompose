@@ -10,17 +10,24 @@ from . import illustris_python as il
 import pynbody
 pynbody.config['number_of_threads']=1
 
-from pynbody import new
+from pynbody import new, filt, units
 from pynbody.array import SimArray
 from pynbody.simdict import SimDict
 from pynbody.snapshot.simsnap import SimSnap
 
 from .illustris_python.util import partTypeNum
 
-from .tng_config import *
-from .extension import *
-from .derived_array import *
-from .simdict_getter import *
+# Side-effect imports: importing these modules registers the pynbody
+# extensions (component properties via register(), derived arrays and
+# SimDict getters). Keep the explicit imports so the side effects are
+# discoverable instead of hidden behind star imports.
+from . import extension  # noqa: F401
+from . import derived_array  # noqa: F401
+from . import simdict_getter  # noqa: F401
+from .tng_config import (UnitComvingLength, get_eps_mDM,
+                         get_groupcat_field_unit, get_particle_field_name,
+                         get_particle_field_unit)
+
 
 class Snapshot():
     def __init__(self, basePath, snapNum):
