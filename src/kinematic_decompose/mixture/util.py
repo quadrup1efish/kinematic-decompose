@@ -179,7 +179,8 @@ def get_Ecut(eb, masses, nbins = 25,M_bin=400,m_bin=80,toll=1.5,shrink=2,Mmin = 
         Ecut = 0
     else:
         #Try to avoid strange nuclear minima with low mass if there are better alternatives
-        rel_filt = [bool((np.sum(masses[eb<E])/np.sum(masses)>=Mmin)+(E>=Emin)) for E in Ecut]
+        total_mass = np.sum(masses)
+        rel_filt = [bool((np.sum(masses[eb<E])/total_mass>=Mmin)+(E>=Emin)) for E in Ecut]
         if len(Ecut[rel_filt])==0:
             Ecut = Ecut[np.argmin(E_val)]
         else:
@@ -209,9 +210,9 @@ def FindMin(q, m_E, M_E, nbins):
     #Find the minima
     id_E = np.where(((left<0)*(right>=0))+((left<=0)*(right>0)))
 
-    #C
-    R_part = np.array([np.sum(hist[0][i+1:]) for i in id_E[0]])
-    id_E = id_E[0][R_part>MinPart]
+    #C — right-of-valley particle count, vectorized via reverse cumsum
+    rev_cumsum = np.flip(np.cumsum(np.flip(hist[0])))
+    id_E = id_E[0][rev_cumsum[id_E[0] + 1] > MinPart]
     id_E_flag = [True]*len(id_E)
     
     
@@ -253,8 +254,11 @@ def RefineMin(q, Vmin, D, Dmin, shrink):
         D = D/shrink
         arr = q[(q>=m_E)*(q<=M_E)]
         hist = np.histogram(arr, bins=np.arange(m_E, M_E, D))
-        hist_min=(hist[0][np.where(hist[0]!=0)]).min()
-        pid = np.where(hist[0]==hist_min)[0][0]
+        nonzero = np.where(hist[0] != 0)[0]
+        if nonzero.size == 0:
+            break  # empty histogram: nothing to refine
+        hist_min = hist[0][nonzero].min()
+        pid = np.where(hist[0] == hist_min)[0][0]
         arr=arr[(arr>=hist[1][pid])*(arr<=(hist[1][pid+1]))]
         #Get the energy as the median within the selected bin
         Vmin = np.median(arr)
@@ -331,11 +335,21 @@ def JEHistogram(E, eps, n_E=20, n_eps=30, seed=42):
 
 def decompose(X, galaxy, model, eoemin_cut, jzojc_cut, predict_method='soft', require_bulge_halo=False):
     dim = model.means_.shape[1]
+    Xd = X[:, :dim]
+    # Single full-data E-step shared by BOTH the labels and the
+    # probabilities (soft_predict + predict_proba used to each run one).
+    _, log_resp = model._estimate_log_prob_resp(Xd)
+    resp = np.exp(log_resp)  # = predict_proba(Xd)
+    prob = resp
+
     if predict_method == 'soft':
-        labels = model.soft_predict(X[:,:dim])
+        rng = np.random.default_rng(42)  # matches soft_predict's fixed seed
+        probs = resp / resp.sum(axis=1, keepdims=True)
+        cum_probs = np.cumsum(probs, axis=1)
+        rand_vals = rng.random(probs.shape[0])
+        labels = (cum_probs >= rand_vals[:, np.newaxis]).argmax(axis=1)
     else:
-        labels = model.predict(X[:,:dim])
-    prob = model.predict_proba(X[:,:dim])
+        labels = np.argmax(log_resp, axis=1)  # argmax(log_resp) == argmax(weighted log prob)
     
     weights, means, covariances = (
         model.weights_,

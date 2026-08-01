@@ -169,6 +169,7 @@ class Scenario:
     rejected: Optional[float] = None
     seed: int = SEED
     kind: str = ""
+    total_peak: float = 0.0  # precomputed after scenario lists are built
 
 
 # =====================================================================
@@ -406,6 +407,14 @@ NO_VALLEY_UNRELIABLE = [
 ]
 
 
+# Precompute total_peak of each scenario (avoid recomputing per panel)
+for _sc in (
+    DETECTABLE_VALLEY + [MASS_FILTER] + UNDETECTABLE
+    + [UNIFORM_PLATEAU] + NO_VALLEY_UNRELIABLE
+):
+    _sc.total_peak = float(np.sum([p for _, p in _sc.components], axis=0).max())
+
+
 # =====================================================================
 # CAN detect - with valley (FindMin)
 # =====================================================================
@@ -549,10 +558,8 @@ def visualize():
 
             # sub-distributions on the SAME [0, 1] scale: each curve is
             # normalized by the peak of the total distribution (their sum)
-            total_pdf = np.sum([p for _, p in sc.components], axis=0)
-            total_peak = total_pdf.max()
             for label, p in sc.components:
-                curve = p / total_peak
+                curve = p / sc.total_peak
                 ax.plot(_EGRID, curve, lw=1.5, label=label)
 
             # TRUE answer (analytically known)

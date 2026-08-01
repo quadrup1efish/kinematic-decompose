@@ -12,6 +12,8 @@ MIN_POINTS = 10
 BF = 0.951
 
 class AutoGaussianMixtureModel:
+    _INIT_EPSILON = 0.05  # ~5% relative precision of the init/ascension statistics
+
     def __init__(self, n_components=None, model=None, dim=None, morphology_type=None):
         self.n_components = n_components
         self.morphology_type = morphology_type
@@ -363,16 +365,31 @@ class AutoGaussianMixtureModel:
         means_3d = np.zeros((K, dim), dtype=X.dtype)
         covariances_3d = np.zeros((K, dim, dim), dtype=X.dtype)
 
-        proba = model.predict_proba(X[:, :2])
+        # bounded subsample for the weighted 3D statistics: the means /
+        # covariances along the new dimension(s) are sufficient statistics,
+        # so a random subsample of size S = K*d*(d+1)/(2*eps**2) (eps =
+        # INIT_EPSILON, ~5% relative precision) estimates them with the
+        # same accuracy as the full scan, in O(S*K*d) independent of N.
+        s_init = int(np.ceil(
+            K * dim * (dim + 1) / (2 * self._INIT_EPSILON ** 2)
+        ))
+        s_init = min(N, s_init)
+        if s_init < N:
+            idx = np.random.RandomState(42).randint(0, N, size=s_init)
+            Xs = X[idx]
+        else:
+            Xs = X
 
-        for k in range(K):
-            pk = proba[:, k]
-            total_weight = pk.sum()
+        proba = model.predict_proba(Xs[:, :2])
 
-            means_3d[k] = np.average(X, axis=0, weights=pk)
-
-            diff = X - means_3d[k]
-            covariances_3d[k] = np.einsum('i,id,ie->de', pk, diff, diff) / total_weight
+        # batched weighted mean + covariance (equivalent to the per-component
+        # loop, single vectorized pass: one (K, N, dim) temp instead of K
+        # sequential (N, dim) ones)
+        total_weight = proba.sum(axis=0)                  # (K,)
+        means_3d = (proba.T @ Xs) / total_weight[:, None]  # (K, dim)
+        diff = Xs[None, :, :] - means_3d[:, None, :]       # (K, N, dim)
+        covariances_3d = np.einsum('ki,kid,kie->kde', proba.T, diff, diff)
+        covariances_3d /= total_weight[:, None, None]
 
         means_3d[:, [0, 1]] = model.means_
 

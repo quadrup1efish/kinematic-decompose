@@ -207,6 +207,38 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 - **面密度**（中间行）：各成分的恒星面密度投影图（$\log_{10} \Sigma_*$），包含正面和侧向视图。
 - **视向速度图**（底部行）：各成分的恒星视向速度图（$v_{\text{los}} / \sqrt{v_{\text{los}}^2 + 3\sigma_{\text{los}}^2}$）。
 
+## Mini-Batch 训练与性能
+
+`GaussianMixture` 支持 mini-batch EM，且**单次迭代的耗时与粒子总数近似无关**（只依赖 `batch_size`，而非 N）。三个关键优化：
+
+1. **有界子采样初始化** — 初始参数不再扫描全部 N 个粒子，而是在随机子样本上估计，子样本大小由统计功效公式给出：
+   $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
+   （协方差 MLE 的相对标准误 ≈ 1/√n，即初始协方差估计约 5% 相对精度）。初始化成本 O(S·K·d)，当 N > S 时与 N 无关。
+2. **有放回批次采样** — 每个 mini-batch 用 `randint(0, N, batch_size)` 直接抽取（每迭代 O(batch)），替代维护大小为 N 的完整置换数组（每 epoch O(N)）。该方案统计无偏；收敛后 lower bound 与无放回方案偏差 < 0.5%。
+3. **消除冗余 E-step** — `fit()` 跳过只为计算标签的尾部全量 E-step；`decompose()` 在软标签与概率之间共享一次全量 E-step；2D→3D 升维的加权均值/协方差同样使用有界子采样，并以批量 `einsum` 全向量化。
+
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| Pipeline 总耗时（TNG50-1，514 万恒星） | 37.3 s | **22.1 s（−41%）** |
+| Mini-batch 单次迭代耗时 @ N = 10⁷ | 249 ms | **1.9 ms** |
+| full 与 mini 的 lower bound 偏差 | — | < 0.5% |
+| PDF 图体积 | 数十 MB | **0.4 MB**（位图化） |
+
+缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、full / 当前 / 旧 mini-batch 三条曲线，右侧轴显示 full/mini 的 lower bound 相对误差）。
+
+## 可视化风格
+
+所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：无衬线 Helvetica/Arial、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
+
+## 测试
+
+```bash
+python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py -q
+```
+
+- `tests/example_eoemin_cut.py` — 21 个测试，锁定能量截断算法在 19 个合成场景（有谷、无缝、均匀、噪声等）下的行为，含 TRUE（绿虚线）/ DETECTED（红实线）叠加可视化。
+- `tests/example_gaussian_mixture.py` — GMM/AutoGMM 行为测试及上述 N 缩放基准。
+
 ## 引用
 
 若本代码对您的研究有帮助，请引用相关文献：

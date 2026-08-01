@@ -656,9 +656,11 @@ class GaussianMixture(BaseMixture):
     verbose_interval : int, default=10
         Number of iteration done before the next print.
 
-    batch_size : int, default=10240
+    batch_size : int, default=14400
         The size of each mini-batch. Only used when `fit()` is called with
-        ``use_mini_batch=True``.
+        ``use_mini_batch=True``. Default is set by the statistical-power
+        formula K*d*(d+1)/(2*eps**2) with eps = 5% and the typical
+        K=6, d=3 problem size (6*3*4/(2*0.05**2) = 14400).
 
     window_size : int or None, default=None
         Size of the sliding median window used for mini-batch convergence
@@ -789,7 +791,7 @@ class GaussianMixture(BaseMixture):
         precisions_init=None,
         random_state=None,
         warm_start=False,
-        batch_size=10240,
+        batch_size=14400,
         window_size=None,
         verbose=0,
         verbose_interval=10,

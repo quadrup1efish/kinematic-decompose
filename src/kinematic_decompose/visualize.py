@@ -9,16 +9,33 @@ from scipy.stats import binned_statistic_2d
 
 available_fonts = [f.name for f in fm.fontManager.ttflist]
 
-params = {
-    'font.family': 'serif',
-    'font.serif': 'DejaVu Serif',  
-    'font.style': 'normal', 
+# Unified Nature-journal figure style (Nature/Science tier): sans-serif
+# Helvetica/Arial, restrained sizes, hairline axes, no grid. Applied
+# project-wide so every figure (decomposition panels and test figures)
+# shares one look.
+NATURE_STYLE = {
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Helvetica', 'Arial', 'DejaVu Sans'],
+    'font.style': 'normal',
     'font.weight': 'normal',
-    'mathtext.fontset': 'dejavuserif',
-    'font.size': 15,
-    'legend.frameon': False
+    'mathtext.fontset': 'dejavusans',
+    'font.size': 12,
+    'axes.labelsize': 13,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'legend.fontsize': 10,
+    'legend.frameon': False,
+    'axes.linewidth': 0.9,
+    'xtick.major.width': 0.9,
+    'ytick.major.width': 0.9,
+    'xtick.major.size': 4,
+    'ytick.major.size': 4,
+    'axes.grid': False,
+    'figure.dpi': 100,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
 }
-rcParams.update(params)
+rcParams.update(NATURE_STYLE)
 
 def _hist_bin_fd(x):
     iqr = np.subtract(*np.percentile(x, [75, 25]))
@@ -219,6 +236,32 @@ def visualize_phase_space(X, means=None, covariances=None, ecut=-0.75, etacut=0.
 
 from scipy.stats import binned_statistic_2d
 
+def _binned_sum_count(x, y, values, x_edges, y_edges):
+    """O(N) 2D binning with weighted sum + count (no sort).
+
+    Replacement for scipy.stats.binned_statistic_2d, which internally
+    lexsorts the full data (O(N log N)) on every call. Here each particle
+    is mapped to its bin once via searchsorted, then bincount accumulates
+    the weighted sum and the count in O(N).
+    """
+    nx, ny = len(x_edges) - 1, len(y_edges) - 1
+    # Bin mapping matching scipy.binned_statistic_2d edge semantics:
+    #  - value == left edge  -> first bin
+    #  - value == right edge -> last bin
+    #  - value outside range -> discarded
+    # searchsorted(side='right')-1 handles the left edge and interior bins,
+    # but puts right-edge values one past the last bin -> fix them explicitly.
+    ix = np.searchsorted(x_edges, x, side='right') - 1
+    iy = np.searchsorted(y_edges, y, side='right') - 1
+    ix = np.where(x == x_edges[-1], nx - 1, ix)
+    iy = np.where(y == y_edges[-1], ny - 1, iy)
+    valid = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+    flat = ix[valid] * ny + iy[valid]
+    w = np.asarray(values)[valid]
+    counts = np.bincount(flat, minlength=nx * ny).reshape(nx, ny)
+    sums = np.bincount(flat, weights=w, minlength=nx * ny).reshape(nx, ny)
+    return sums, counts
+
 def plot_surface_density(ax, pos, mass, view='face', size=50, bins=500):
     range_val = (-size, size)
     extent = [range_val[0], range_val[1], range_val[0], range_val[1]]
@@ -232,7 +275,9 @@ def plot_surface_density(ax, pos, mass, view='face', size=50, bins=500):
     if view == 'face': 
         x,z = pos[:,0], pos[:,1]
         pixel = (2*size)**2/bins**2
-        stat= binned_statistic_2d(x=x,y=z,values=mass,statistic='sum',bins=bins,range=[range_val, range_val])[0]
+        x_edges = np.linspace(range_val[0], range_val[1], bins + 1)
+        y_edges = np.linspace(range_val[0], range_val[1], bins + 1)
+        stat, _ = _binned_sum_count(x, z, mass, x_edges, y_edges)
     else:
         vmin = 6.5
         vmax = 10.5
@@ -242,9 +287,11 @@ def plot_surface_density(ax, pos, mass, view='face', size=50, bins=500):
         bins = [bins, bins//2]
         pixel = (x_range[1] - x_range[0]) * (y_range[1] - y_range[0]) / (bins[0] * bins[1])
         extent = [x_range[0], x_range[1], y_range[0], y_range[1]] 
-        stat= binned_statistic_2d(x=x,y=z,values=mass,statistic='sum',bins=bins,range=[x_range, y_range])[0]
+        x_edges = np.linspace(x_range[0], x_range[1], bins[0] + 1)
+        y_edges = np.linspace(y_range[0], y_range[1], bins[1] + 1)
+        stat, _ = _binned_sum_count(x, z, mass, x_edges, y_edges)
     density=np.log10(stat/pixel)
-    im = ax.imshow(density.T,extent=extent,origin='lower',cmap=cmap,vmin=vmin,vmax=vmax, interpolation='nearest')
+    im = ax.imshow(density.T,extent=extent,origin='lower',cmap=cmap,vmin=vmin,vmax=vmax, interpolation='nearest', rasterized=True)
     ax.set_aspect('auto')
     ax.set_xticks([])
     ax.set_yticks([])
@@ -260,11 +307,17 @@ def plot_vlos(ax, pos, vel, mass, size=50, bins=500):
     cmap.set_bad('white')
     cmap.set_under('white')
     x,z = pos[:,0], pos[:,2]
-    vlos= binned_statistic_2d(x=x,y=z,values=(vel[:,1])/np.sqrt(vel[:,1]**2+3*np.var(vel[:,1])),statistic='mean',bins=bins, range=[x_range, y_range])[0]
-    stat= binned_statistic_2d(x=x,y=z,values=mass,statistic='sum',bins=bins,range=[x_range, y_range])[0]
-    density=np.log10(stat/pixel)
+    x_edges = np.linspace(x_range[0], x_range[1], bins[0] + 1)
+    y_edges = np.linspace(y_range[0], y_range[1], bins[1] + 1)
+    # single O(N) binning pass: weighted vlos sum + mass sum + count
+    vlos_val = (vel[:,1])/np.sqrt(vel[:,1]**2+3*np.var(vel[:,1]))
+    vlos_sum, cnt = _binned_sum_count(x, z, vlos_val, x_edges, y_edges)
+    mass_sum, _ = _binned_sum_count(x, z, mass, x_edges, y_edges)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        vlos = np.where(cnt > 0, vlos_sum / np.maximum(cnt, 1), np.nan)
+    density=np.log10(mass_sum/pixel)
     vlos[density < 6.5] = np.nan
-    im = ax.imshow(vlos.T,extent=extent,origin='lower',cmap=cmap,vmin=-0.9,vmax=0.9, interpolation='nearest')
+    im = ax.imshow(vlos.T,extent=extent,origin='lower',cmap=cmap,vmin=-0.9,vmax=0.9, interpolation='nearest', rasterized=True)
     ax.set_aspect('auto')
     ax.set_xticks([])
     ax.set_yticks([])
@@ -440,6 +493,7 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
         counts, xedges, yedges, im = ax.hist2d(X[:, proj[0]], X[:, proj[1]],
                                                 range=[ranges[proj[0]],ranges[proj[1]]],
                                                 **hist_params)
+        im.set_rasterized(True)
         im.set_clim(vmin=1, vmax=np.nanmax(counts)*1.5)
         for j, (mean, covariance) in enumerate(zip(bulge_means, bulge_covariances)):
             gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_bulge[j])

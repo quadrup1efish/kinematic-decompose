@@ -6,6 +6,7 @@ import matplotlib.patches as patches
 #import sys
 #sys.path.insert(0, '../..')
 from kinematic_decompose.mixture import GaussianMixture
+from kinematic_decompose.visualize import NATURE_STYLE
 
 def generate_data(n_samples, n_features, weights, means, precisions, covariance_type, dtype=np.float64):
     rng = np.random.RandomState(0)
@@ -403,8 +404,126 @@ def test_initialize_sample_weight():
     plt.scatter(kmeans_model.cluster_centers_[:,0], kmeans_model.cluster_centers_[:,1])
     plt.show()
 
+def test_scaling_with_n_samples():
+    """Average per-iteration fit time vs n_samples for full vs mini batch.
+
+    Fixed 10 EM iterations (min_iter = max_iter = 10), n_samples on a
+    log-space grid of 10 points from 1e4 to 1e6 (K=2, d=2). Reports the
+    mean time of ONE iteration (total / 10) and a log-log scaling plot.
+    Mini batch is shown both with the current default path (bounded
+    subsample init + with-replacement sampling, both O(batch) per
+    iteration) and with the old path (full-dataset init + full
+    permutation, both O(N) per fit), so the optimizations show up
+    directly as a gap between the two mini curves at large N. The right
+    y-axis shows the relative lower-bound error of mini vs full batch
+    (|dLB|/|LB_full|) - mini batch sees fewer data per iteration, so its
+    converged lower bound may deviate from the full-batch one.
+    batch_size=1024 so every point really uses the mini-batch path
+    (3*batch_size = 3072 < 1e4).
+    """
+    import warnings
+    from sklearn.exceptions import ConvergenceWarning
+
+    n_features = 2
+    weights = [0.6, 0.4]
+    means = [[-3, -3], [3, 3]]
+    covariance_type = "full"
+    precisions = {
+        covariance_type: [
+            [[0.5, 0], [0, 0.5]],
+            [[1, 0.3], [0.3, 0.8]]
+        ]
+    }
+
+    n_iters = 10  # fixed iteration count: min_iter = max_iter = n_iters
+    n_list = np.logspace(4, 6, 10).astype(int)  # 1e4 .. 1e6, 10 points
+    per_iter_full, per_iter_mini, per_iter_mini_old = [], [], []
+    lb_full, lb_mini = [], []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        for n in n_list:
+            X = generate_data(n, n_features, weights, means, precisions, covariance_type)
+
+            t0 = time()
+            m_full = GaussianMixture(n_components=2, init_params='random', batch_size=1024,
+                                     min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(X, use_mini_batch=False)
+            per_iter_full.append((time() - t0) / n_iters)
+            lb_full.append(m_full.lower_bound_)
+
+            t0 = time()
+            m_mini = GaussianMixture(n_components=2, init_params='random', batch_size=1024,
+                                     min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(X, use_mini_batch=True)
+            per_iter_mini.append((time() - t0) / n_iters)
+            lb_mini.append(m_mini.lower_bound_)
+
+            # old path: full-dataset init + no-replacement permutation
+            # (disabling both optimizations reproduces the pre-optimization cost)
+            t0 = time()
+            GaussianMixture(n_components=2, init_params='random', batch_size=1024,
+                            min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(
+                X, use_mini_batch=True, _use_bounded_init=False,
+                _replace_sampling=False)
+            per_iter_mini_old.append((time() - t0) / n_iters)
+
+            print(f"  N={n:>8d}: full {per_iter_full[-1] * 1e3:7.1f} ms/iter | "
+                  f"mini(bounded) {per_iter_mini[-1] * 1e3:7.1f} ms/iter | "
+                  f"mini(full-init) {per_iter_mini_old[-1] * 1e3:7.1f} ms/iter")
+
+    per_iter_full = np.array(per_iter_full)
+    per_iter_mini = np.array(per_iter_mini)
+    per_iter_mini_old = np.array(per_iter_mini_old)
+    lb_full = np.array(lb_full)
+    lb_mini = np.array(lb_mini)
+
+    # per-iteration cost should scale up with N for full batch
+    assert per_iter_full[-1] > per_iter_full[0], "full per-iter should grow with N"
+    # at large N, one mini-batch iteration must cost less than one full one
+    assert per_iter_mini[-1] < per_iter_full[-1], "mini per-iter should beat full at largest N"
+    # the bounded-subsample init must not be slower than the full-dataset init
+    # at the largest N (it removes the O(N) init scan)
+    assert per_iter_mini[-1] <= per_iter_mini_old[-1], "bounded init should not be slower"
+
+    # ---- figure: unified Nature-journal style (shared with visualize.py) ----
+    # Font sizes are bumped up relative to NATURE_STYLE so they match the
+    # large 9x6 canvas (labels stand out instead of being dwarfed).
+    with plt.rc_context({
+        **NATURE_STYLE,
+        'font.size': 16,
+        'axes.labelsize': 19,
+        'xtick.labelsize': 15,
+        'ytick.labelsize': 15,
+        'legend.fontsize': 14,
+    }):
+        fig, ax1 = plt.subplots(figsize=(9, 6))
+        ax1.loglog(n_list, per_iter_full, 'b-o', linewidth=2, label='Full Batch')
+        ax1.loglog(n_list, per_iter_mini, 'r-o', linewidth=2, label='Mini Batch (current: bounded init + replace sampling)')
+        ax1.loglog(n_list, per_iter_mini_old, color='r', linestyle='--', marker='s', linewidth=1.5, alpha=0.7,
+                   label='Mini Batch (old: full init + permutation)')
+        ax1.set_xlabel('N')
+        ax1.set_ylabel('Time per iteration (s)')
+        ax1.legend(loc='upper left', framealpha=0.9)
+
+        # right axis: relative lower-bound error of mini batch vs full batch
+        # (mini batch sees fewer data per iteration, so its converged LB may
+        # deviate from the full-batch one; |dLB|/|LB_full| quantifies it).
+        # Shown in percent with a fixed [0, 1%] ylim so the (tiny) errors
+        # are read at their true magnitude instead of looking inflated.
+        ax2 = ax1.twinx()
+        lb_err = 100.0 * np.abs(lb_full - lb_mini) / np.abs(lb_full)
+        ax2.semilogx(n_list, lb_err, 'g-^', linewidth=1.5, alpha=0.8, label='|dLB|/|LB_full| (%)')
+        ax2.set_ylabel('Relative LB error (%)', color='g')
+        ax2.set_ylim(0, 1.0)
+        ax2.tick_params(axis='y', labelcolor='g')
+        ax2.legend(loc='upper right', framealpha=0.9)
+        ax2.grid(False)
+
+        fig.tight_layout()
+        plt.show()
+
+
 if __name__ == "__main__":
     test_speed()
+    test_scaling_with_n_samples()
     #test_mini_batch()
     #test_initialize_sample_weight()
     #test_sample_weight()
