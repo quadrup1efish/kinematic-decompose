@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.interpolate import interp1d
 
 from pynbody import units
 from pynbody.array import SimArray
@@ -7,7 +6,20 @@ from pynbody.snapshot.simsnap import SimSnap
 
 import agama
 agama.setNumThreads(1)
+# NOTE: units(1,1,1) means all inputs/outputs are in code units; the caller
+# must convert the snapshot to physical units (kpc / km s^-1 / Msol) first
+# so that the numerical values match the units attached to the arrays below.
 agama.setUnits(length=1, mass=1, velocity=1)
+
+# Multipole components for the galaxy potential model: (family, symmetry,
+# lmax). dm is treated as spherical (lmax=0, monopole only) since its
+# distribution is nearly round; gas and stars are axisymmetric (lmax=4,
+# enough to capture the disk flattening). See Agama docs on Multipole.
+_GALAXY_POTENTIAL_COMPONENTS = [
+    ('dm',  's', 0),
+    ('gas', 'a', 4),
+    ('s',   'a', 4),
+]
 
 def create_multipole_potential(
     positions: np.ndarray,
@@ -32,9 +44,9 @@ def create_multipole_potential(
         masses: Particle masses array of shape (N,) [required]
         eps: Smoothing length parameter (default: 0.39)
         symmetry: Symmetry type: 's' (spherical), 'a' (axisymmetric), 
-                 or 'n' (none) (default: 's')
-        rmin: Minimum radius for potential evaluation (default: 1e-3)
-        lmax: Maximum angular order of expansion (default: 8)
+                 or 'n' (none) (default: 'a')
+        rmin: Minimum radius for potential evaluation (default: 1e-2)
+        lmax: Maximum angular order of expansion (default: 4)
         gridsizeR: Number of radial grid points (default: 40)
         export: Whether to export potential to file (default: False)
         filename: Output filename if export=True (default: auto-generated)
@@ -79,15 +91,9 @@ def create_multipole_potential(
 def construct_galaxy_potential_model(galaxy):
     eps = galaxy.properties.get('eps', 0.39)
 
-    components = [
-        ('dm',  's', 0),
-        ('gas', 'a', 4),
-        ('s',   'a', 4),
-    ]
-
     potentials = []
 
-    for name, symmetry, lmax in components:
+    for name, symmetry, lmax in _GALAXY_POTENTIAL_COMPONENTS:
         pos = getattr(galaxy, name)['pos']
         if name == 'dm':
             mass = np.broadcast_to(
@@ -120,36 +126,34 @@ def construct_galaxy_potential_model(galaxy):
 
 def calculate_kinematic_param(
     galaxy: SimSnap,
-    potential = None,
-    partType  = 'star',
+    potential: agama.Potential | None = None,
+    partType: str = 'star',
     filename: str | None = None
 ) -> SimSnap:
     """
     Calculate kinematic parameters for galaxy particles.
-    
+
     Computes potential, circular velocity, and angular momentum for given orbits.
-    
+
     Args:
-        galaxy: Galaxy snapshot with position and velocity data
+        galaxy: Galaxy snapshot with position and velocity data (must be in
+            physical units, see module note on agama.setUnits)
+        potential: Pre-computed potential; if None, built from the galaxy
+            particle distribution (unless `filename` is given)
+        partType: Family to attach the circular angular momentum to
+            ('star' | 'gas' | 'dm')
         filename: Potential file to load (if None, compute from particles)
-    
+
     Returns:
         Modified galaxy snapshot with added 'phi' and 'jc' fields
     """
     # 1. Create or load potential
     if potential is None:
         if filename is None:
-            #positions = galaxy['pos'].view(np.ndarray)
-            #masses = galaxy['mass'].view(np.ndarray)
-            #eps = galaxy.properties.get('eps', 0.39)
-            #potential = create_multipole_potential(
-            #    positions, masses, eps, export=False
-            #)
             potential = construct_galaxy_potential_model(galaxy)
         else:
             potential = agama.Potential(filename)
-    else:
-        pass
+    assert potential is not None  # built / loaded / passed in all branches
     # 2. Compute particle potentials
     galaxy['phi'] = SimArray(
         potential.potential(galaxy['pos']),
@@ -159,6 +163,8 @@ def calculate_kinematic_param(
     # 3. Prepare radial grid for circular orbits
     particle_radii = galaxy['r'].view(np.ndarray)
     positive_radii = particle_radii[particle_radii > 0]
+    if len(positive_radii) == 0:
+        raise ValueError("No particles with positive radius; cannot build circular-orbit grid.")
     
     r_min = 0.9 * np.min(positive_radii)
     r_max = 1.1 * np.max(particle_radii)
@@ -184,39 +190,30 @@ def calculate_kinematic_param(
     sorted_energies = circular_energies[sort_idx]
     sorted_angular_momenta = circular_angular_momenta[sort_idx]
     
-    jc_interpolator = interp1d(
-        np.log10(-sorted_energies),
-        np.log10(sorted_angular_momenta),
-        fill_value='extrapolate',
-        bounds_error=False
-    )
-    
     particle_data = {
         'star': galaxy.s,
         'gas': galaxy.g,
         'dm': galaxy.dm,
     }.get(partType, galaxy)
     particle_energies = particle_data['e']
-
-    log_jc = jc_interpolator(np.log10(-particle_energies))
+    
+    # np.interp: piecewise-linear in log-log space, constant extrapolation at
+    # the ends. xp must be strictly increasing: log10(-E) decreases with E,
+    # so interpolate in -log10(-E) instead (interp1d sorted internally, but
+    # np.interp does not).
+    log_jc = np.interp(
+        -np.log10(-particle_energies),
+        -np.log10(-sorted_energies),
+        np.log10(sorted_angular_momenta),
+        left=np.log10(sorted_angular_momenta[0]),
+        right=np.log10(sorted_angular_momenta[-1]),
+    )
     jc_values = 10**log_jc
-    
-    # Handle extrapolated values
-    min_energy = circular_energies.min()
-    max_energy = circular_energies.max()
-    
-    jc_values[particle_energies > max_energy] = circular_angular_momenta[-1]
-    jc_values[particle_energies < min_energy] = circular_angular_momenta[0]
-    jc_values = np.where(np.isnan(jc_values), circular_angular_momenta[-1], jc_values)
-    jc_values = np.maximum(jc_values, circular_angular_momenta[0])
+    # unbound particles (e > 0) yield NaN in log10(-e); fall back to the
+    # outermost circular angular momentum (same guard as the original code)
+    jc_values = np.where(np.isnan(jc_values), sorted_angular_momenta[-1], jc_values)
     
     # 6. Store results
-    particle_data = {
-        'star': galaxy.s,
-        'gas': galaxy.g,
-        'dm': galaxy.dm,
-    }.get(partType, galaxy)
-    
     particle_data['jc'] = SimArray(
         jc_values,
         units=particle_data['pos'].units * particle_data['vel'].units
