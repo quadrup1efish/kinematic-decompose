@@ -226,6 +226,10 @@ The `GaussianMixture` supports **mini-batch EM whose per-iteration cost is indep
 | Cost growth as N: 10⁴ → 10⁷ (×1000) | ×2500 | **×5** |
 | Converged lower bound | reference | within 0.5% (same iteration count) |
 
+<p align="center">
+  <img src="image/scaling_performance.png" width="700" alt="Mini-batch vs full-batch scaling"/>
+</p>
+
 The key enabler is a **statistically-grounded bounded initialisation**: initial parameters are estimated on a random subsample of size
 
 $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$

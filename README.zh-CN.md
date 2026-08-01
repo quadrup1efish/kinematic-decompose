@@ -227,6 +227,10 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 | N 从 10⁴ 增至 10⁷（×1000）的成本增长 | ×2500 | **×5** |
 | 收敛后 lower bound | 基准 | 偏差 < 0.5%（迭代数一致） |
 
+<p align="center">
+  <img src="image/scaling_performance.png" width="700" alt="Mini-batch 与 full-batch 的缩放对比"/>
+</p>
+
 核心机制是**基于统计功效的有界子采样初始化**：初始参数在大小为
 
 $$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
