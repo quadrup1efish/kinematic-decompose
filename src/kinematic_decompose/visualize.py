@@ -1,5 +1,6 @@
 import matplotlib
 import numpy as np
+from dataclasses import dataclass
 from matplotlib import rcParams
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -41,6 +42,91 @@ def _hist_bin_fd(x):
     iqr = np.subtract(*np.percentile(x, [75, 25]))
     return 2.0 * iqr * x.size ** (-1.0 / 3.0)
 
+
+# ============================================================================
+# Component specs: the kinematic classification (which GMM components map to
+# bulge / halo / disks), the per-component sort order and the color ramp are
+# each defined ONCE here and shared by every figure entry point.
+# ============================================================================
+
+def _mask_bulge(m, ecut, etacut):
+    return (m[:, 0] < ecut) & (np.abs(m[:, 1]) < etacut)
+
+
+def _mask_halo(m, ecut, etacut):
+    return (m[:, 0] > ecut) & (np.abs(m[:, 1]) < etacut)
+
+
+def _mask_warmdisk(m, ecut, etacut):
+    return (m[:, 1] > etacut) & (m[:, 1] < 0.85)
+
+
+def _mask_colddisk(m, ecut, etacut):
+    return m[:, 1] > 0.85
+
+
+def _mask_counter_rotate(m, ecut, etacut):
+    return m[:, 1] < -etacut
+
+
+# draw order matches the historic rendering order (overlap-sensitive)
+_COMPONENT_ORDER = ['Bulge', 'Halo', 'Cold disk', 'Warm disk',
+                    'Counter-rotating disk']
+_COMPONENT_MASKS = {
+    'Bulge': _mask_bulge,
+    'Halo': _mask_halo,
+    'Cold disk': _mask_colddisk,
+    'Warm disk': _mask_warmdisk,
+    'Counter-rotating disk': _mask_counter_rotate,
+}
+_COMPONENT_SORTS = {
+    'Bulge': lambda ms: ms[:, 0].argsort(),
+    'Halo': lambda ms: ms[:, 0].argsort(),
+    'Cold disk': lambda ms: ms[:, 1].argsort()[::-1],
+    'Warm disk': lambda ms: ms[:, 1].argsort()[::-1],
+    'Counter-rotating disk': lambda ms: np.abs(ms[:, 1]).argsort()[::-1],
+}
+_COMPONENT_RAMPS = {
+    'Bulge': ('darkred', 'mistyrose'),
+    'Halo': ('darkorange', 'peachpuff'),
+    'Cold disk': ('darkblue', 'lightblue'),
+    'Warm disk': ('darkgreen', 'lightgreen'),
+    'Counter-rotating disk': None,  # uses the Purples colormap
+}
+
+
+def classify_components(means, covariances, ecut, etacut):
+    """Pure function: split (means, covariances) into sorted per-component
+    subgroups. Returns {name: (sub_means, sub_covariances)} in draw order."""
+    out = {}
+    for name in _COMPONENT_ORDER:
+        mask = _COMPONENT_MASKS[name](means, ecut, etacut)
+        sm, sc = means[mask], covariances[mask]
+        idx = _COMPONENT_SORTS[name](sm)
+        out[name] = (sm[idx], sc[idx])
+    return out
+
+
+def _component_colors(name, n):
+    """Per-component color ramp, identical to the historic gradient logic."""
+    n = max(n, 4)
+    if _COMPONENT_RAMPS[name] is None:
+        return [mcolors.to_hex(plt.cm.Purples(t)) for t in np.linspace(1, 0, n)]
+    c0, c1 = _COMPONENT_RAMPS[name]
+    a, b = np.array(mcolors.to_rgb(c0)), np.array(mcolors.to_rgb(c1))
+    return [mcolors.to_hex(a * (1 - t) + b * t) for t in np.linspace(0, 1, n)]
+
+
+def _draw_ellipses(ax, comps, colors, proj):
+    """Draw one Gaussian ellipse per component per projection, in the
+    historic component order."""
+    for name in _COMPONENT_ORDER:
+        sm, sc = comps[name]
+        for j, (mean, covariance) in enumerate(zip(sm, sc)):
+            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)],
+                         colors[name][j])
+
+
 def gaussian_ell(ax, mean, covariance, color):
     eigvals, eigvecs = np.linalg.eigh(covariance)
     eigvals = np.maximum(eigvals, 0)
@@ -78,97 +164,16 @@ def _visualize_residual(X, means, covariances, extent):
     return
 
 def visualize_phase_space(X, means=None, covariances=None, ecut=-0.75, etacut=0.50, threshold_line=False, dims=2, ranges=None): 
-    if means is not None:
+    if means is not None and covariances is not None:
         ncs, dims = means.shape
-        bulge_index = (means[:, 0] < ecut) & (np.abs(means[:, 1]) < etacut)
-        halo_index  = (means[:, 0] > ecut) & (np.abs(means[:, 1]) < etacut)
-        warmdisk_index = (means[:, 1] > etacut) & (means[:, 1] < 0.85)
-        colddisk_index = (means[:, 1] > 0.85)
-        counter_rotate_index = means[:, 1] < -etacut
-
-        bulge_means = means[bulge_index]
-        bulge_covariances = covariances[bulge_index]
-
-        halo_means = means[halo_index]
-        halo_covariances = covariances[halo_index]
-
-        warmdisk_means = means[warmdisk_index]
-        warmdisk_covariances = covariances[warmdisk_index]
-
-        colddisk_means = means[colddisk_index]
-        colddisk_covariances = covariances[colddisk_index]
-
-        counter_rotate_means = means[counter_rotate_index]
-        counter_rotate_covariances = covariances[counter_rotate_index]
-
-        bulge_sort_idx = bulge_means[:, 0].argsort()
-        bulge_means = bulge_means[bulge_sort_idx]
-        bulge_covariances = bulge_covariances[bulge_sort_idx]
-
-        halo_sort_idx = halo_means[:, 0].argsort()
-        halo_means = halo_means[halo_sort_idx]
-        halo_covariances = halo_covariances[halo_sort_idx]
-
-        warmdisk_sort_idx = warmdisk_means[:, 1].argsort()[::-1]
-        warmdisk_means = warmdisk_means[warmdisk_sort_idx]
-        warmdisk_covariances = warmdisk_covariances[warmdisk_sort_idx]
-
-        colddisk_sort_idx = colddisk_means[:, 1].argsort()[::-1]
-        colddisk_means = colddisk_means[colddisk_sort_idx]
-        colddisk_covariances = colddisk_covariances[colddisk_sort_idx]
-
-        counter_rotate_sort_idx = np.abs(counter_rotate_means[:, 1]).argsort()[::-1]
-        counter_rotate_means = counter_rotate_means[counter_rotate_sort_idx]
-        counter_rotate_covariances = counter_rotate_covariances[counter_rotate_sort_idx]
-
-        bulge_ncs = max(len(bulge_means),4) 
-        halo_ncs = max(len(halo_means),4) 
-        colddisk_ncs = max(len(colddisk_means),4)
-        warmdisk_ncs = max(len(warmdisk_means),4)
-        counter_rotate_ncs = max(len(counter_rotate_means),4)
-    else: 
-        bulge_ncs = 10#len(bulge_means)
-        halo_ncs = 10#len(halo_means)
-        colddisk_ncs = 10#len(colddisk_means)
-        warmdisk_ncs = 10#len(warmdisk_means)
-        counter_rotate_ncs = 10
+        comps = classify_components(means, covariances, ecut, etacut)
+        colors = {name: _component_colors(name, len(ms))
+                  for name, (ms, _) in comps.items()}
+    else:
+        comps = {}
+        colors = {name: _component_colors(name, 10) for name in _COMPONENT_ORDER}
 
     axis_labels = [r'$e/|e|_\mathrm{max}$', r'$j_z/j_c$', r'$j_p/j_c$']
-
-    colors_counter_rotate = [mcolors.to_hex(plt.cm.Purples(t)) 
-                         for t in np.linspace(1, 0, counter_rotate_ncs)]
-
-    start_color = np.array(mcolors.to_rgb('darkblue'))
-    end_color = np.array(mcolors.to_rgb('lightblue'))
-    colors_colddisk = []
-    for i in range(colddisk_ncs):
-        t = i / (colddisk_ncs - 1)
-        color = start_color * (1 - t) + end_color * t
-        colors_colddisk.append(mcolors.to_hex(color))
-
-    start_color = np.array(mcolors.to_rgb('darkgreen'))
-    end_color = np.array(mcolors.to_rgb('lightgreen'))
-    colors_warmdisk = []
-    for i in range(warmdisk_ncs):
-        t = i / (warmdisk_ncs - 1)
-        color = start_color * (1 - t) + end_color * t
-        colors_warmdisk.append(mcolors.to_hex(color))
-
-    start_color = np.array(mcolors.to_rgb('darkred'))
-    end_color = np.array(mcolors.to_rgb('mistyrose'))
-    colors_bulge = []
-    for i in range(bulge_ncs):
-        t = i / (bulge_ncs-1)#i / (bulge_ncs-1)
-        color = start_color * (1 - t) + end_color * t
-        colors_bulge.append(mcolors.to_hex(color))
-
-    start_color = np.array(mcolors.to_rgb('darkorange'))
-    end_color = np.array(mcolors.to_rgb('peachpuff'))
-    colors_halo = []
-    for i in range(halo_ncs):
-        t = i / (halo_ncs-1)
-        color = start_color * (1 - t) + end_color * t
-        colors_halo.append(mcolors.to_hex(color))
     
     if ranges is None:
         percentile_low, percentile_high = 0.5, 99.5  
@@ -212,16 +217,7 @@ def visualize_phase_space(X, means=None, covariances=None, ecut=-0.75, etacut=0.
         ax.set_ylabel(f"{axis_labels[proj[1]]}", fontsize=12)
         ax.tick_params(labelsize=8)
         if means is not None and covariances is not None:
-            for j, (mean, covariance) in enumerate(zip(bulge_means, bulge_covariances)):
-                gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_bulge[j])
-            for j, (mean, covariance) in enumerate(zip(halo_means, halo_covariances)):
-                gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_halo[j])
-            for j, (mean, covariance) in enumerate(zip(colddisk_means, colddisk_covariances)):
-                gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_colddisk[j])
-            for j, (mean, covariance) in enumerate(zip(warmdisk_means, warmdisk_covariances)):
-                gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_warmdisk[j])
-            for j, (mean, covariance) in enumerate(zip(counter_rotate_means, counter_rotate_covariances)):
-                gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_counter_rotate[j])
+            _draw_ellipses(ax, comps, colors, proj)
                 
         if threshold_line and i==0:
             ax.axvline(etacut, lw=2, linestyle='--', color='k')
@@ -323,6 +319,69 @@ def plot_vlos(ax, pos, vel, mass, size=50, bins=500):
     ax.set_yticks([])
     return im
 
+# ============================================================================
+# Panel specs: declarative description of every panel in the decomposition
+# figure. Rendering logic lives in the _render_* functions below, so adding
+# a new panel type = one PanelSpec + one render function.
+# ============================================================================
+
+@dataclass(frozen=True)
+class PanelSpec:
+    kind: str          # 'phase_space' | 'density' | 'vlos'
+    proj: tuple = ()   # phase_space only: projection axes
+    view: str = 'face'  # density only: 'face' | 'edge'
+
+
+def _render_phase_panel(ax, X, proj, ranges, hist_params, comps, colors,
+                        axis_labels, ecut, etacut, threshold_line, fs):
+    proj = list(proj)  # tuple would be read as multi-dim index, not columns
+    counts, xedges, yedges, im = ax.hist2d(X[:, proj[0]], X[:, proj[1]],
+                                           range=[ranges[proj[0]], ranges[proj[1]]],
+                                           **hist_params)
+    im.set_rasterized(True)
+    im.set_clim(vmin=1, vmax=np.nanmax(counts)*1.5)
+    _draw_ellipses(ax, comps, colors, proj)
+    ax.set_xlabel(f"{axis_labels[proj[0]]}", fontsize=fs['xylabel'])
+    ax.set_ylabel(f"{axis_labels[proj[1]]}", fontsize=fs['xylabel'])
+    ax.tick_params(labelsize=fs['tick'])
+    if threshold_line:
+        ax.axvline(etacut, lw=1, linestyle=':', color='k')
+        ax.axhline(ecut, lw=1, linestyle=':', color='k')
+    return im
+
+
+def _render_density_panel(ax, particle, view, size, bins, name, color,
+                          r50, r90, fs, show_title=True):
+    im = plot_surface_density(ax, particle['pos'], particle['mass'],
+                              view, size=size, bins=bins)
+    if show_title:  # overlay + titles only on the face-on row (historic)
+        if name == 'Total':
+            circle = plt.Circle((0, 0), r50, fill=False, color='k', linewidth=1,
+                                linestyle='--', alpha=0.75)
+            ax.add_patch(circle)
+            circle = plt.Circle((0, 0), r90, fill=False, color='orange',
+                                linewidth=1, linestyle='--', alpha=0.75)
+            ax.add_patch(circle)
+            fmt = '.2f' if r90 >= 10 and r50 < 10 else '.1f'
+            ax.text(0.96, 0.09, f'$r_{{50}} = {r50:{fmt}}$ kpc',
+                    transform=ax.transAxes, ha='right', va='bottom',
+                    fontsize=fs['text'], color='k')
+            ax.text(0.96, 0.02, f'$r_{{90}} = {r90:.1f}$ kpc',
+                    transform=ax.transAxes, ha='right', va='bottom',
+                    fontsize=fs['text'], color='orange')
+        if name != 'Total':
+            ax.set_title(f'{name} ({particle.Mass_frac*100:.0f}%)',
+                         color=color, fontsize=fs['title'])
+        else:
+            ax.set_title(f'{name}', color=color, fontsize=fs['title'])
+    return im
+
+
+def _render_vlos_panel(ax, particle, size, bins):
+    return plot_vlos(ax, particle['pos'], particle['vel'], particle['mass'],
+                     size=size, bins=bins)
+
+
 def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None, threshold_line=False):
     means = model.means_
     covariances = model.covariances_
@@ -330,72 +389,10 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
     _, dims = means.shape 
      
     ecut = eoemin_cut
-    etacut= jzojc_cut
-    bulge_index = (means[:, 0] < ecut) & (np.abs(means[:, 1]) < etacut)
-    halo_index  = (means[:, 0] > ecut) & (np.abs(means[:, 1]) < etacut)
-    warmdisk_index = (means[:, 1] > etacut) & (means[:, 1] < 0.85)
-    colddisk_index = (means[:, 1] > 0.85)
-    counter_rotate_index = means[:, 1] < -etacut
-
-    bulge_means = means[bulge_index]
-    bulge_covariances = covariances[bulge_index]
-
-    halo_means = means[halo_index]
-    halo_covariances = covariances[halo_index]
-
-    warmdisk_means = means[warmdisk_index]
-    warmdisk_covariances = covariances[warmdisk_index]
-
-    colddisk_means = means[colddisk_index]
-    colddisk_covariances = covariances[colddisk_index]
-
-    counter_rotate_means = means[counter_rotate_index]
-    counter_rotate_covariances = covariances[counter_rotate_index]
-
-    bulge_sort_idx = bulge_means[:, 0].argsort()
-    bulge_means = bulge_means[bulge_sort_idx]
-    bulge_covariances = bulge_covariances[bulge_sort_idx]
-
-    halo_sort_idx = halo_means[:, 0].argsort()
-    halo_means = halo_means[halo_sort_idx]
-    halo_covariances = halo_covariances[halo_sort_idx]
-
-    warmdisk_sort_idx = warmdisk_means[:, 1].argsort()[::-1]
-    warmdisk_means = warmdisk_means[warmdisk_sort_idx]
-    warmdisk_covariances = warmdisk_covariances[warmdisk_sort_idx]
-
-    colddisk_sort_idx = colddisk_means[:, 1].argsort()[::-1]
-    colddisk_means = colddisk_means[colddisk_sort_idx]
-    colddisk_covariances = colddisk_covariances[colddisk_sort_idx]
-
-    counter_rotate_sort_idx = np.abs(counter_rotate_means[:, 1]).argsort()[::-1]
-    counter_rotate_means = counter_rotate_means[counter_rotate_sort_idx]
-    counter_rotate_covariances = counter_rotate_covariances[counter_rotate_sort_idx]
-
-    bulge_ncs = max(len(bulge_means),4) 
-    halo_ncs = max(len(halo_means),4) 
-    colddisk_ncs = max(len(colddisk_means),4)
-    warmdisk_ncs = max(len(warmdisk_means),4)
-    counter_rotate_ncs = max(len(counter_rotate_means),4)
-    
-    colors_counter_rotate = [mcolors.to_hex(plt.cm.Purples(t)) 
-                         for t in np.linspace(1, 0, counter_rotate_ncs)]
-
-    colors_colddisk = [mcolors.to_hex(np.array(mcolors.to_rgb('darkblue')) * (1 - t) + 
-                                    np.array(mcolors.to_rgb('lightblue')) * t)
-                    for t in np.linspace(0, 1, colddisk_ncs)]
-
-    colors_warmdisk = [mcolors.to_hex(np.array(mcolors.to_rgb('darkgreen')) * (1 - t) + 
-                                    np.array(mcolors.to_rgb('lightgreen')) * t)
-                    for t in np.linspace(0, 1, warmdisk_ncs)]
-
-    colors_bulge = [mcolors.to_hex(np.array(mcolors.to_rgb('darkred')) * (1 - t) + 
-                                np.array(mcolors.to_rgb('mistyrose')) * t)
-                    for t in np.linspace(0, 1, bulge_ncs)]
-
-    colors_halo = [mcolors.to_hex(np.array(mcolors.to_rgb('darkorange')) * (1 - t) + 
-                                np.array(mcolors.to_rgb('peachpuff')) * t)
-                for t in np.linspace(0, 1, halo_ncs)]
+    etacut = jzojc_cut
+    comps = classify_components(means, covariances, ecut, etacut)
+    colors = {name: _component_colors(name, len(ms))
+              for name, (ms, _) in comps.items()}
 
     color_map = {
         'Total': 'k',
@@ -413,14 +410,9 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
         'Warm disk': galaxy.warmdisk,
         'Counter-rotating disk': galaxy.counter_rotating_disk
     }
-    component_map = [
-        (bulge_means, 'Bulge'), 
-        (halo_means, 'Halo'),
-        (colddisk_means, 'Cold disk'),
-        (warmdisk_means, 'Warm disk'),
-        (counter_rotate_means, 'Counter-rotating disk')
-    ]
-    names = ['Total'] + [name for data, name in component_map if len(data) > 0] + ['Color bar']
+    names = (['Total']
+             + [name for name in _COMPONENT_ORDER if len(comps[name][0]) > 0]
+             + ['Color bar'])
     plot_items = []
     for name in names:
         if name == 'Color bar':
@@ -488,85 +480,58 @@ def visualize_decomposition(X, model, galaxy, eoemin_cut, jzojc_cut, ranges=None
             high += span * buffer_factor
             ranges.append([low, high])
 
-    for i, proj in enumerate(projects):
-        ax = plt.subplot(ps_gs[2*i+1])
-        counts, xedges, yedges, im = ax.hist2d(X[:, proj[0]], X[:, proj[1]],
-                                                range=[ranges[proj[0]],ranges[proj[1]]],
-                                                **hist_params)
-        im.set_rasterized(True)
-        im.set_clim(vmin=1, vmax=np.nanmax(counts)*1.5)
-        for j, (mean, covariance) in enumerate(zip(bulge_means, bulge_covariances)):
-            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_bulge[j])
-        for j, (mean, covariance) in enumerate(zip(halo_means, halo_covariances)):
-            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_halo[j])
-        for j, (mean, covariance) in enumerate(zip(colddisk_means, colddisk_covariances)):
-            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_colddisk[j])
-        for j, (mean, covariance) in enumerate(zip(warmdisk_means, warmdisk_covariances)):
-            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_warmdisk[j])
-        for j, (mean, covariance) in enumerate(zip(counter_rotate_means, counter_rotate_covariances)):
-            gaussian_ell(ax, mean[proj], covariance[np.ix_(proj, proj)], colors_counter_rotate[j])
+    fs = {'xylabel': xylabel_fontsize, 'tick': tick_fontsize,
+          'bar': bar_label_fontsize, 'title': title_fontsize,
+          'text': text_fontsize}
 
-        ax.set_xlabel(f"{axis_labels[proj[0]]}", fontsize=xylabel_fontsize)
-        ax.set_ylabel(f"{axis_labels[proj[1]]}", fontsize=xylabel_fontsize)
-        ax.tick_params(labelsize=tick_fontsize)
-        if threshold_line and i==0:
-            ax.axvline(etacut, lw=1, linestyle=':', color='k')
-            ax.axhline(ecut, lw=1, linestyle=':', color='k')
+    # --- phase-space panels (declarative) ---
+    ps_panels = [PanelSpec('phase_space', proj=tuple(p)) for p in projects]
+    for k, spec in enumerate(ps_panels):
+        ax = plt.subplot(ps_gs[2*k+1])
+        im = _render_phase_panel(ax, X, spec.proj, ranges, hist_params, comps,
+                                 colors, axis_labels, ecut, etacut,
+                                 threshold_line and k == 0, fs)
 
-    ax = plt.subplot(ps_gs[2*i+1+1])
+    ax = plt.subplot(ps_gs[2*k+1+1])
     cbar = fig.colorbar(im, cax=ax, pad=0, extend='max')
-    cbar.set_label('$N_{*}$', fontsize=bar_label_fontsize)
-    cbar.ax.tick_params(labelsize=tick_fontsize)
+    cbar.set_label('$N_{*}$', fontsize=fs['bar'])
+    cbar.ax.tick_params(labelsize=fs['tick'])
+
+    # --- surface-density / vlos panels (declarative) ---
+    sd_rows = [PanelSpec('density', view='face'),
+               PanelSpec('density', view='edge'),
+               PanelSpec('vlos')]
     sd_ncol = ncol
     sd_gs = outer_gs[1].subgridspec(3, sd_ncol, wspace=0, hspace=0, width_ratios=[1 for _ in range(sd_ncol-1)]+[0.05], height_ratios=[1,0.5,0.5])
     
-    size = min(max(np.sqrt(2)*5*galaxy.s.r50, 1.2*np.sqrt(2)*galaxy.s.r90), 100)
+    r50 = galaxy.s.r50  # cache: each access re-derives r + full sort (~0.5s)
+    r90 = galaxy.s.r90
+    size = min(max(np.sqrt(2)*5*r50, 1.2*np.sqrt(2)*r90), 100)
     bin_width = 2*galaxy.properties['eps']
     bins = min(int(2*size/bin_width), 300)
     
-    for i in range(3):
+    for i, row_spec in enumerate(sd_rows):
+        last_im = None  # im of the last non-colorbar panel in this row
         for j, plot_item in enumerate(plot_items):
             name = plot_item['name']
-            color= plot_item['color']
-            particle = plot_item['particle']
             if name == "Color bar":
-                if i==0:
-                    ax = plt.subplot(sd_gs[i,j])
-                    cbar = fig.colorbar(im, cax=ax, pad=0)
-                    cbar.set_label(r'$\log_{10} \Sigma_*$/(M$_\odot$ kpc$^{-2}$)', fontsize=bar_label_fontsize-1)
-                    cbar.ax.tick_params(labelsize=tick_fontsize)
-                elif i==1:
-                    ax = plt.subplot(sd_gs[i,j])
-                    cbar = fig.colorbar(im, cax=ax, pad=0)
-                    #cbar.set_label(r'$\log_{10} \Sigma_*$/(M$_\odot$ kpc$^{-2}$)', fontsize=9)
-                    cbar.ax.tick_params(labelsize=tick_fontsize)
-                else:
-                    ax = plt.subplot(sd_gs[i,-1])
-                    cbar = fig.colorbar(im, cax=ax, pad=0)
-                    cbar.set_label('$v_{los}/\sqrt{v_{los}^{2}+3\sigma_{los}^{2}}$', fontsize=bar_label_fontsize-5)
-                    cbar.ax.tick_params(labelsize=tick_fontsize)
+                ax = plt.subplot(sd_gs[i, -1])
+                cbar = fig.colorbar(last_im, cax=ax, pad=0)
+                if i == 0:
+                    cbar.set_label(r'$\log_{10} \Sigma_*$/(M$_\odot$ kpc$^{-2}$)', fontsize=fs['bar']-1)
+                elif i == 2:
+                    cbar.set_label('$v_{los}/\sqrt{v_{los}^{2}+3\sigma_{los}^{2}}$', fontsize=fs['bar']-5)
+                cbar.ax.tick_params(labelsize=fs['tick'])
             else:
-                ax = plt.subplot(sd_gs[i,j])
-                if i==0:
-                    im = plot_surface_density(ax, particle['pos'], particle['mass'], size=size, bins=bins)
-                    if name == "Total":
-                        circle = plt.Circle((0, 0), galaxy.s.r50, fill=False, color='k', linewidth=1, linestyle='--', alpha=0.75)
-                        ax.add_patch(circle)
-                        circle = plt.Circle((0, 0), galaxy.s.r90, fill=False, color='orange', linewidth=1, linestyle='--', alpha=0.75)
-                        ax.add_patch(circle)
-                        fmt = '.2f' if galaxy.s.r90 >= 10 and galaxy.s.r50 < 10 else '.1f'
-                        ax.text(0.96, 0.09, f'$r_{{50}} = {galaxy.s.r50:{fmt}}$ kpc', 
-                                transform=ax.transAxes, ha='right', va='bottom', fontsize=text_fontsize, color='k')
-                        ax.text(0.96, 0.02, f'$r_{{90}} = {galaxy.s.r90:.1f}$ kpc', 
-                                transform=ax.transAxes, ha='right', va='bottom', fontsize=text_fontsize, color='orange')
-                    if j != 0: 
-                        ax.set_title(f'{name} ({particle.Mass_frac*100:.0f}%)', color=color, fontsize=title_fontsize)
-                    else:
-                        ax.set_title(f'{name}', color=color, fontsize=title_fontsize) 
+                ax = plt.subplot(sd_gs[i, j])
+                if row_spec.kind == 'density':
+                    last_im = _render_density_panel(ax, plot_item['particle'],
+                                                    row_spec.view, size, bins,
+                                                    name, plot_item['color'],
+                                                    r50, r90, fs,
+                                                    show_title=(i == 0))
                 else:
-                    if i == 1:
-                        im = plot_surface_density(ax, particle['pos'], particle['mass'], 'edge', size=size, bins=bins)
-                    else:
-                        im = plot_vlos(ax, particle['pos'], particle['vel'], particle['mass'], size=size, bins=bins) 
+                    last_im = _render_vlos_panel(ax, plot_item['particle'],
+                                                 size, bins)
     del means, covariances
     return fig
