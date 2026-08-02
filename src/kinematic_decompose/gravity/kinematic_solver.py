@@ -188,7 +188,14 @@ def calculate_kinematic_param(
     # 5. Interpolate circular angular momentum for particle energies
     sort_idx = np.argsort(circular_energies)
     sorted_energies = circular_energies[sort_idx]
-    sorted_angular_momenta = circular_angular_momenta[sort_idx]
+    # L_c(E) can be non-monotonic when the potential has a central cusp:
+    # the same energy then admits two circular-orbit radii (inner/outer
+    # branch). Every orbit satisfies |j| <= L_c(E), so interpolate on the
+    # upper envelope (cumulative maximum) of the sorted circular angular
+    # momenta - the plain sorted sequence would interpolate between the
+    # two branches and underestimate jc, producing unphysical jz/jc >> 1.
+    sorted_angular_momenta = np.maximum.accumulate(
+        circular_angular_momenta[sort_idx])
     
     particle_data = {
         'star': galaxy.s,

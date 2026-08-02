@@ -87,6 +87,8 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
     snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
     snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50], as_context=False)
     galaxy = snapshot.container
+    if gravity_potential_path is None:
+        pot = construct_galaxy_potential_model(galaxy)
     galaxy = calculate_kinematic_param(galaxy, pot)
     X, model, eoemin_cut, jzojc_cut = train_auto_gaussian_mixture_model(galaxy, pot)
     galaxy     = util.decompose(X, galaxy, model, eoemin_cut, jzojc_cut, predict_method='hard')
