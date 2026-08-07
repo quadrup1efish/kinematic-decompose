@@ -36,7 +36,7 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
     jzojc_cut_train = scaler.transform(jzojc_cut, columns=jzojc_index)
     r_jzojc_cut_train = scaler.transform(-jzojc_cut, columns=jzojc_index)
 
-    auto_gmm = AutoGaussianMixtureModel()
+    auto_gmm = AutoGaussianMixtureModel(random_state=42)
     auto_gmm = auto_gmm.fit(X_train, 
                             eoemin_cut=eoemin_cut_train, 
                             jzojc_cut=jzojc_cut_train,

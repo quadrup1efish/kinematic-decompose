@@ -14,17 +14,18 @@ BF = 0.951
 class AutoGaussianMixtureModel:
     _INIT_EPSILON = 0.05  # ~5% relative precision of the init/ascension statistics
 
-    def __init__(self, n_components=None, model=None, dim=None, morphology_type=None):
+    def __init__(self, n_components=None, model=None, dim=None, morphology_type=None, random_state=None):
         self.n_components = n_components
         self.morphology_type = morphology_type
+        self.random_state = random_state
 
     def _morphology_class(self, X, jzojc_cut):
-        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=100, min_iter=10, tol=1e-4).fit(X)
+        self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=100, min_iter=10, tol=1e-4, random_state=self.random_state).fit(X)
         if np.max(self.morphology_model.means_[:,1]) > jzojc_cut:
             self.morphology_type='disk'
         else:
             self.morphology_type='spheroid'
-            self.morphology_model = GM(n_components=2, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-3).fit(X)
+            self.morphology_model = GM(n_components=2, n_init=1, init_params='kmeans', max_iter=200, min_iter=10, tol=1e-3, random_state=self.random_state).fit(X)
         return self.morphology_model
     
     def _initialize(self, X, model, eoemin_cut, jzojc_cut, r_jzojc_cut,  
@@ -130,7 +131,8 @@ class AutoGaussianMixtureModel:
                                 means_init=means_init, 
                                 precisions_init=precisions_init, 
                                 max_iter=0,
-                                min_iter=0).fit(X)
+                                min_iter=0,
+                                random_state=self.random_state).fit(X)
         
         if scaler is not None:
             halo_mask = (
@@ -254,6 +256,9 @@ class AutoGaussianMixtureModel:
             iqr = q3 - q1
             if n_selected==0 and positive_gains[0] > q3 + 1.5 * iqr:
                 n_selected = 1
+            # ensure at least one positive-gain region is selected (single-region case)
+            if n_selected == 0 and len(positive_gains) > 0:
+                n_selected = 1
             selected_labels = positive_labels[:n_selected]
             self._cum_ratio = cum_ratio
             self._n_components_candidates = np.arange(base_nc, len(cum_ratio)+base_nc, 1)
@@ -312,7 +317,8 @@ class AutoGaussianMixtureModel:
                                 means_init=means, 
                                 precisions_init=precisions, 
                                 max_iter=0,
-                                min_iter=0).fit(X)
+                                min_iter=0,
+                                random_state=self.random_state).fit(X)
         return self.initial_model, delta_L
     
     def fit(
@@ -346,11 +352,12 @@ class AutoGaussianMixtureModel:
             'weights_init': self.initial_model.weights_,
             'means_init': self.initial_model.means_,
             'precisions_init': self.initial_model.precisions_,
+            'random_state': self.random_state,
             'max_iter': 100,
             'min_iter': 50
         }
         params.update(kwargs)
-        self.best_model = GM(**params).fit(data_to_train, sample_weight)
+        self.best_model = GM(**params).fit(data_to_train, sample_weight=sample_weight)
 
         return self
     

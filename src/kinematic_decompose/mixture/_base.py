@@ -336,7 +336,7 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                     self._initialized = True
                 if not _replace_sampling:
                     if not hasattr(self, "_perm") or do_init:
-                        self._perm = np.random.permutation(n_samples)
+                        self._perm = random_state.permutation(n_samples)
                         self._cursor = 0
 
                 lb_window = deque(maxlen=_window_size)
@@ -356,7 +356,7 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                             batch_idx = random_state.randint(0, n_samples, size=self.batch_size)
                         else:
                             if self._cursor + self.batch_size > n_samples:
-                                self._perm = np.random.permutation(n_samples)
+                                self._perm = random_state.permutation(n_samples)
                                 self._cursor = 0
                             batch_idx = self._perm[self._cursor:self._cursor + self.batch_size]
                             self._cursor += self.batch_size
