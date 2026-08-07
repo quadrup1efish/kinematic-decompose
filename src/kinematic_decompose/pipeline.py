@@ -41,7 +41,6 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
                             eoemin_cut=eoemin_cut_train, 
                             jzojc_cut=jzojc_cut_train,
                             r_jzojc_cut = r_jzojc_cut_train, 
-                            sample_weight=galaxy.s['mass'][keep_particle],
                             max_iter=100, 
                             min_iter=10,
                             scaler=scaler,
