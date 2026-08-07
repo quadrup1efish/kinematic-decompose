@@ -186,16 +186,47 @@ def calculate_kinematic_param(
     circular_angular_momenta = r_midpoints * circular_velocities
     
     # 5. Interpolate circular angular momentum for particle energies
-    sort_idx = np.argsort(circular_energies)
-    sorted_energies = circular_energies[sort_idx]
+    # Drop non-finite grid points BEFORE building the envelope: np.interp
+    # requires finite xp/fp, and NaN would otherwise propagate through the
+    # log-space interpolation. Restrict to bound circular orbits (E < 0) so
+    # -log10(-E) stays finite and strictly increasing after the transform.
+    valid_grid = (
+        np.isfinite(circular_energies)
+        & (circular_energies < 0)
+        & np.isfinite(circular_angular_momenta)
+    )
+    finite_energies = circular_energies[valid_grid]
+    finite_angular_momenta = circular_angular_momenta[valid_grid]
+    if len(finite_energies) == 0:
+        raise ValueError(
+            "No finite, bound circular-orbit grid points; cannot interpolate jc.")
+
+    sort_idx = np.argsort(finite_energies)
+    sorted_energies = finite_energies[sort_idx]
+    sorted_angular_momenta = finite_angular_momenta[sort_idx]
     # L_c(E) can be non-monotonic when the potential has a central cusp:
     # the same energy then admits two circular-orbit radii (inner/outer
     # branch). Every orbit satisfies |j| <= L_c(E), so interpolate on the
-    # upper envelope (cumulative maximum) of the sorted circular angular
-    # momenta - the plain sorted sequence would interpolate between the
-    # two branches and underestimate jc, producing unphysical jz/jc >> 1.
-    sorted_angular_momenta = np.maximum.accumulate(
-        circular_angular_momenta[sort_idx])
+    # per-energy upper envelope: for each unique branch energy take the
+    # maximum angular momentum among the grid points AT that energy.
+    # Then apply a running cumulative maximum over the per-energy maxima:
+    # this enforces a monotonically non-decreasing upper envelope, so the
+    # folded (non-monotonic) L_c(E) region cannot drag interpolated jc
+    # below the physical circular-orbit bound for any orbit. Deduplicating
+    # energies with np.unique also guarantees xp is strictly increasing
+    # (np.interp requirement) before the log transform.
+    unique_energies, first_idx = np.unique(sorted_energies, return_index=True)
+    # first_idx marks the start of each unique energy in the sorted array,
+    # so maximum.reduceat evaluates the max over exactly that energy group.
+    per_energy_max = np.maximum.reduceat(sorted_angular_momenta, first_idx)
+    # Cummax of the per-energy max: without it, the low branch of the folded
+    # L_c(E) can pollute the interpolation intervals of adjacent energies
+    # and underestimate jc for real orbits.
+    envelope_jc = np.maximum.accumulate(per_energy_max)
+    # Guard against L=0 grid points: log10(0) = -inf would poison the
+    # interpolation, so floor the envelope at a small positive value
+    # (angular momenta are non-negative: r * sqrt(r * F_r)).
+    envelope_jc = np.maximum(envelope_jc, np.finfo(float).eps)
     
     particle_data = {
         'star': galaxy.s,
@@ -210,15 +241,17 @@ def calculate_kinematic_param(
     # np.interp does not).
     log_jc = np.interp(
         -np.log10(-particle_energies),
-        -np.log10(-sorted_energies),
-        np.log10(sorted_angular_momenta),
-        left=np.log10(sorted_angular_momenta[0]),
-        right=np.log10(sorted_angular_momenta[-1]),
+        -np.log10(-unique_energies),
+        np.log10(envelope_jc),
+        left=np.log10(envelope_jc[0]),
+        right=np.log10(envelope_jc[-1]),
     )
     jc_values = 10**log_jc
     # unbound particles (e > 0) yield NaN in log10(-e); fall back to the
-    # outermost circular angular momentum (same guard as the original code)
-    jc_values = np.where(np.isnan(jc_values), sorted_angular_momenta[-1], jc_values)
+    # outermost circular angular momentum (same guard as the original code).
+    # envelope_jc is guaranteed finite (finite grid points + eps floor), so
+    # the fallback value cannot reintroduce NaN.
+    jc_values = np.where(np.isnan(jc_values), envelope_jc[-1], jc_values)
     
     # 6. Store results
     particle_data['jc'] = SimArray(
