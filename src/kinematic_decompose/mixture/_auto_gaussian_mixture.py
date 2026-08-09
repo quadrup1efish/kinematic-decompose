@@ -21,7 +21,10 @@ class AutoGaussianMixtureModel:
 
     def _morphology_class(self, X, jzojc_cut):
         self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=100, min_iter=10, tol=1e-4, random_state=self.random_state).fit(X)
-        if np.max(self.morphology_model.means_[:,1]) > jzojc_cut:
+        # disk if any component is strongly rotated in EITHER direction (cold
+        # disk has positive jz/jc, counter-rotating disk strongly negative):
+        # use the absolute value so a counter-rotating structure is not missed.
+        if np.max(np.abs(self.morphology_model.means_[:,1])) > jzojc_cut:
             self.morphology_type='disk'
         else:
             self.morphology_type='spheroid'
@@ -249,7 +252,8 @@ class AutoGaussianMixtureModel:
         positive_gains = positive_gains[:MAX_N_COMPONENTS-base_nc]
         positive_labels = positive_labels[:MAX_N_COMPONENTS-base_nc]
         if len(positive_gains) > 0:
-            cum_ratio = np.exp(np.cumsum(positive_gains) - np.sum(positive_gains))
+            cum_ratio = np.exp(
+                0.5 * (np.cumsum(positive_gains) - np.sum(positive_gains)))
             n_selected = np.searchsorted(cum_ratio, BF, side='right')
             n_selected = min(n_selected, len(positive_labels))
             q1, q3 = np.percentile(positive_gains, [25, 75])
@@ -374,11 +378,12 @@ class AutoGaussianMixtureModel:
 
         # bounded subsample for the weighted 3D statistics: the means /
         # covariances along the new dimension(s) are sufficient statistics,
-        # so a random subsample of size S = K*d*(d+1)/(2*eps**2) (eps =
-        # INIT_EPSILON, ~5% relative precision) estimates them with the
-        # same accuracy as the full scan, in O(S*K*d) independent of N.
+        # so a random subsample of the Ashtiani et al. (2020) sample-complexity
+        # size S = k*d^2/eps^2 (eps = INIT_EPSILON, ~5% relative precision)
+        # estimates them with the same accuracy as the full scan, in
+        # O(S*K*d) independent of N. This matches the batch-size formula.
         s_init = int(np.ceil(
-            K * dim * (dim + 1) / (2 * self._INIT_EPSILON ** 2)
+            K * dim * dim / (self._INIT_EPSILON ** 2)
         ))
         s_init = min(N, s_init)
         if s_init < N:
