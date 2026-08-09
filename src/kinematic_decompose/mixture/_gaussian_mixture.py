@@ -656,11 +656,29 @@ class GaussianMixture(BaseMixture):
     verbose_interval : int, default=10
         Number of iteration done before the next print.
 
-    batch_size : int, default=14400
+    batch_size : int or None, default=None
         The size of each mini-batch. Only used when `fit()` is called with
-        ``use_mini_batch=True``. Default is set by the statistical-power
-        formula K*d*(d+1)/(2*eps**2) with eps = 5% and the typical
-        K=6, d=3 problem size (6*3*4/(2*0.05**2) = 14400).
+        ``use_mini_batch=True``. If None, it is derived automatically from
+        `tv_error` via the near-optimal sample complexity of learning a
+        k-Gaussian mixture to TV error eps
+        (Ashtiani et al. 2020, Thm 1.5): n = polylog(kd/eps)*k*d^2/eps^2.
+        For the typical K=6, d=3, tv_error=0.05 this gives 21600 without
+        the polylog factor.
+
+    tv_error : float, default=0.05
+        Target total-variation error eps controlling the automatically
+        derived `batch_size` (when batch_size=None). Smaller tv_error gives
+        a larger batch and a mini-batch solution closer to full-batch.
+
+    delta : float, default=0.05
+        Failure probability used only when `use_polylog=True`, for the
+        high-probability polylog(kd/(eps*delta)) factor.
+
+    use_polylog : bool, default=False
+        If True, include the conservative polylog factor ln(kd/(eps*delta))
+        in the auto-derived batch_size (high-probability guarantee). Off by
+        default: the expectation-level precision is empirically sufficient
+        for mini-batch/full-batch convergence equivalence.
 
     window_size : int or None, default=None
         Size of the sliding median window used for mini-batch convergence
@@ -791,8 +809,11 @@ class GaussianMixture(BaseMixture):
         precisions_init=None,
         random_state=None,
         warm_start=False,
-        batch_size=14400,
+        batch_size=None,
         window_size=None,
+        tv_error=0.05,
+        delta=0.05,
+        use_polylog=False,
         verbose=0,
         verbose_interval=10,
     ):
@@ -808,6 +829,9 @@ class GaussianMixture(BaseMixture):
             warm_start=warm_start,
             batch_size=batch_size,
             window_size=window_size,
+            tv_error=tv_error,
+            delta=delta,
+            use_polylog=use_polylog,
             verbose=verbose,
             verbose_interval=verbose_interval,
         )

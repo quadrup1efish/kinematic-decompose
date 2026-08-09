@@ -84,6 +84,9 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         warm_start,
         batch_size,
         window_size,
+        tv_error,
+        delta,
+        use_polylog,
         verbose,
         verbose_interval,
     ):
@@ -98,8 +101,33 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         self.warm_start = warm_start
         self.batch_size = batch_size
         self.window_size = window_size
+        self.tv_error = tv_error
+        self.delta = delta
+        self.use_polylog = use_polylog
         self.verbose = verbose
         self.verbose_interval = verbose_interval
+
+    @staticmethod
+    def suggested_batch_size(k, d, tv_error, delta=0.05, use_polylog=False):
+        """Mini-batch size from the near-optimal sample complexity of learning
+        a k-Gaussian mixture in R^d to TV error eps
+        (Ashtiani, Ben-David, Harvey, Liaw, Mehrabian & Plan 2020,
+        "Near-optimal Sample Complexity Bounds for Robust Learning of Gaussian
+        Mixtures via Compression Schemes", Theorem 1.5):
+
+            n = polylog(kd/eps_delta) * k*d^2 / eps^2
+
+        The polylog factor carries the high-probability (1-delta) guarantee;
+        it is off by default (use_polylog=False), giving the expectation-level
+        precision that is empirically sufficient for mini-batch EM convergence
+        equivalence. When use_polylog=True a first-order ln(kd/(eps*delta))
+        conservative factor is included.
+        """
+        base = k * d * d / (tv_error * tv_error)
+        if use_polylog:
+            arg = k * d / (tv_error * delta)
+            base *= max(1.0, np.log(max(arg, 2.0)))
+        return int(np.ceil(base))
 
     @abstractmethod
     def _check_parameters(self, X, xp=None):
@@ -289,7 +317,17 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                 f"n_samples = {X.shape[0]}"
             )
         self._check_parameters(X, xp=xp)
-        
+
+        # batch_size=None -> derive from tv_error via the near-optimal sample
+        # complexity of Gaussian mixtures (Ashtiani et al. 2020, Thm 1.5):
+        # n = polylog(kd/eps) * k*d^2/eps^2. k = n_components, d = X.shape[1].
+        if self.batch_size is None:
+            self.batch_size = self.suggested_batch_size(
+                self.n_components, X.shape[1],
+                tv_error=self.tv_error, delta=self.delta,
+                use_polylog=self.use_polylog,
+            )
+
         # if n_samples > 3*batch_size, switch to mini-batch for efficiency
         if use_mini_batch:
             use_mini_batch = 3 * self.batch_size < n_samples
