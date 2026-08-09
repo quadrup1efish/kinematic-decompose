@@ -15,6 +15,15 @@ Traditional kinematic decomposition methods (e.g., Abadi + JEHistogram) rely on 
 3. **Detects residual underfitting** — uses a 2D histogram-based $\Delta L$ criterion to identify phase-space regions where the current mixture under-represents the data and adds new components automatically.
 4. **Supports soft and hard classification** — assigns each star particle a probabilistic or hard label for the five kinematic categories.
 
+## Key Innovations
+
+1. **Adaptive component discovery (AutoGMM)** — the number of Gaussian components is **discovered from the data, not prescribed**: morphology is classified first, residual phase-space regions that the mixture under-represents are detected via a likelihood-ratio criterion, and new components are added until the fit is adequate. The component count is therefore set by the data, never by hand.
+2. **Mini-batch EM with N-independent cost** — per-iteration cost scales with `batch_size` instead of the particle count N (~2000× faster per iteration at N = 10⁷), and the converged solutions are **statistically indistinguishable** from full-batch EM (Bayes factor ≈ 1, Jeffreys "no evidence").
+3. **Theory-grounded batch size** — the default batch size follows the near-optimal sample complexity of Gaussian mixtures, $\tilde{\Theta}(kd^2/\varepsilon^2)$ (Ashtiani et al. 2020), exposed as a `tv_error` parameter: $S = k\,d^2/\varepsilon^2$ (optional conservative polylog factor). No hand-tuned magic numbers.
+4. **Physically consistent circular angular momentum** — the $j_c$ interpolation uses a monotone upper envelope (cumulative maximum of the per-energy circular angular momenta), which is exact when the folded $L_c(E)$ of a cusped potential would otherwise produce unphysical $j_z/j_c \gg 1$.
+5. **Reproducible and robust** — `random_state` plumbed through the whole pipeline (identical inputs → identical decompositions), NaN-safe interpolation, optional mass-weighted EM, and TV-distance-based validation tests.
+
+
 ### Kinematic Phase Space
 
 The decomposition operates in three dimensions of the stellar orbital phase space:
@@ -230,32 +239,46 @@ The `GaussianMixture` supports **mini-batch EM whose per-iteration cost is indep
   <img src="image/scaling_performance.png" width="700" alt="Mini-batch vs full-batch scaling"/>
 </p>
 
-The key enabler is a **statistically-grounded bounded initialisation**: initial parameters are estimated on a random subsample of size
+The same law as a function of the batch size itself (measured TV vs theory slope, d = 1–3):
 
-$$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
+<p align="center">
+  <img src="image/batch_size_selection.png" width="700" alt="Batch-size theory vs measurement"/>
+</p>
 
-derived from the statistical power of the covariance estimator (≈5% relative precision of the initial covariance), so the initialisation cost is also independent of N. The scaling behaviour is verified by `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, mini-batch repeated 10× per N: median curve with 16–84% spread bands). The right axis shows the **Bayes factor** BF = exp(ΔLB) of the full- vs mini-batch converged solutions on a log scale, with the y-range spanning the Jeffreys "no substantial evidence" region [0.1, 10]. The measured BF ≈ 1 (0.96–1.01 in this run) — **no evidence of a difference**: the two convergence paths are statistically indistinguishable, not merely close.
+and how the auto batch size grows with the problem parameters (d, k, ε):
+
+<p align="center">
+  <img src="image/batch_size_scan.png" width="700" alt="Batch-size parameter scan"/>
+</p>
+
+The key enabler is a **theory-grounded batch size**: the default `batch_size` (when not given explicitly) is derived from the near-optimal sample complexity of learning a $k$-Gaussian mixture in $\mathbb{R}^d$ to TV error $\varepsilon$ — $\tilde{\Theta}(kd^2/\varepsilon^2)$ (Ashtiani et al. 2020, Thm 1.5):
+
+$$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{(TV error)},$$
+
+controlled directly by the `tv_error` parameter (smaller $\varepsilon$ → larger batch → mini-batch solution closer to full-batch). An optional conservative polylog factor $\ln(kd/\varepsilon\delta)$ implements the high-probability version (`use_polylog=True`); it is off by default because the expectation-level precision is empirically sufficient. The figure below validates the law on synthetic data: measured TV(mini, true) follows the $\varepsilon \propto \sqrt{kd^2/S}$ slope. The scaling behaviour is verified by `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, mini-batch repeated 10× per N: median curve with 16–84% spread bands). The right axis shows the **Bayes factor** BF = exp(ΔLB) of the full- vs mini-batch converged solutions on a log scale, with the y-range spanning the Jeffreys "no substantial evidence" region [0.1, 10]. The measured BF ≈ 1 (0.96–1.01 in this run) — **no evidence of a difference**: the two convergence paths are statistically indistinguishable, not merely close.
 
 Beyond EM, the end-to-end pipeline (TNG50-1, 5.1M stars — automatic component selection, kinematic decomposition, publication-quality figures) runs in **22 s**, down from 37 s.
 
 ## Visualisation Style
 
-All figures share a unified **Nature-journal style** (`NATURE_STYLE` in `visualize.py`): sans-serif Helvetica/Arial, restrained sizes, hairline axes, no grid, 300 dpi output. Surface-density and LOS-velocity maps are binned with an O(N) `searchsorted` + `bincount` routine (no `lexsort`) and rasterised in PDF output, keeping file sizes small.
+All figures share a unified **Nature-journal style** (`NATURE_STYLE` in `visualize.py`): serif Times New Roman with STIX math fonts, restrained sizes, hairline axes, no grid, 300 dpi output. Surface-density and LOS-velocity maps are binned with an O(N) `searchsorted` + `bincount` routine (no `lexsort`) and rasterised in PDF output, keeping file sizes small.
 
 ## Testing
 
 ```bash
-python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py -q
+python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q
 ```
 
 - `tests/example_eoemin_cut.py` — 21 tests locking the behaviour of the energy-cut algorithm across 19 synthetic scenarios (valley, seamless, uniform, noisy regimes), with TRUE (green dashed) vs DETECTED (red solid) overlays.
 - `tests/example_gaussian_mixture.py` — GMM/AutoGMM behaviour tests plus the N-scaling benchmark described above.
+- `tests/example_batch_size.py` — 18 tests locking the batch-size theory: the $k d^2/\varepsilon^2$ formula and its scaling, fit-time auto-derivation, the mini/full convergence equivalence measured in **total-variation distance** (vs both the full-batch model and the ground-truth density), N-invariance, polylog conservativeness, and two visualisation figures.
 
 ## Reference
 
 If you use this code in your research, please cite the relevant papers:
 
 - **AutoGMM method**: (TODO — add paper reference when published)
+- **Batch-size sample complexity**: Ashtiani, Ben-David, Harvey, Liaw, Mehrabian & Plan 2020, [Near-optimal Sample Complexity Bounds for Robust Learning of Gaussian Mixtures via Compression Schemes](https://arxiv.org/abs/1710.05209)
 - **IllustrisTNG**: Nelson et al. 2019, [CompAC, 6, 2](https://ui.adsabs.harvard.edu/abs/2019ComAC...6....2N)
 - **Agama**: Vasiliev 2019, [MNRAS, 482, 1525](https://ui.adsabs.harvard.edu/abs/2019MNRAS.482.1525V)
 - **pynbody**: Pontzen et al. 2013, [ApJS, 239, 39](https://ui.adsabs.harvard.edu/abs/2018MNRAS.473.4025P)

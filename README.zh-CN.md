@@ -15,6 +15,15 @@
 3. **残差自动检测** — 利用基于 2D 直方图的 $\Delta L$ 判据，自动识别当前混合模型拟合不足的相空间区域，并新增高斯分量。
 4. **支持软/硬分类** — 可以概率赋值或硬赋值两种方式将每颗恒星标记到五个运动学类别。
 
+## 核心创新
+
+1. **自适应分量发现（AutoGMM）** — 高斯分量的数量**由数据自动发现，而非人工指定**：先分类星系形态，再利用似然比判据检测当前混合模型欠拟合的残差相空间区域，自动加入新分量直至拟合充分。分量数量完全由数据决定。
+2. **迭代成本与 N 无关的 Mini-batch EM** — 单次迭代成本只依赖 `batch_size` 而非粒子总数 N（N = 10⁷ 时每迭代约快 2000×），且收敛解与 full-batch EM **在统计上不可区分**（贝叶斯因子 ≈ 1，Jeffreys 判据"无证据"）。
+3. **理论支撑的 batch_size 选择** — 默认 batch_size 遵循高斯混合学习的近最优样本复杂度 $\tilde{\Theta}(kd^2/\varepsilon^2)$（Ashtiani et al. 2020），通过 `tv_error` 参数直接控制：$S = k\,d^2/\varepsilon^2$（可选保守 polylog 因子）。无人工调参的"魔法数字"。
+4. **物理自洽的圆轨道角动量** — $j_c$ 插值使用单调上包络（逐能量圆轨道角动量的累积最大值），在核球势的折叠 $L_c(E)$ 区域避免产生非物理的 $j_z/j_c \gg 1$。
+5. **可复现且鲁棒** — `random_state` 贯通全流程（相同输入 → 相同分解结果）、NaN 安全插值、可选质量加权 EM、基于 TV 距离的验证测试。
+
+
 ### 运动学相空间
 
 分解基于恒星轨道的三个相空间维度：
@@ -231,32 +240,46 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
   <img src="image/scaling_performance.png" width="700" alt="Mini-batch 与 full-batch 的缩放对比"/>
 </p>
 
-核心机制是**基于统计功效的有界子采样初始化**：初始参数在大小为
+同一规律在 batch size 尺度上的验证（实测 TV 与理论斜率，d = 1–3）：
 
-$$S = \frac{K \cdot d(d+1)}{2\varepsilon^2}, \qquad \varepsilon = 0.05,$$
+<p align="center">
+  <img src="image/batch_size_selection.png" width="700" alt="batch_size 理论 vs 实测"/>
+</p>
 
-的随机子样本上估计（协方差估计量约 5% 相对精度），初始化成本同样与 N 无关。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
+以及自动 batch size 随问题参数（d, k, ε）的演化：
+
+<p align="center">
+  <img src="image/batch_size_scan.png" width="700" alt="batch_size 参数扫描"/>
+</p>
+
+核心机制是**理论支撑的 batch_size 选择**：默认 `batch_size`（未显式给出时）由学习 $\mathbb{R}^d$ 中 $k$ 高斯混合到 TV 误差 $\varepsilon$ 的近最优样本复杂度推导——$\tilde{\Theta}(kd^2/\varepsilon^2)$（Ashtiani et al. 2020, Thm 1.5）：
+
+$$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误差）},$$
+
+由 `tv_error` 参数直接控制（$\varepsilon$ 越小 → batch 越大 → mini-batch 解越接近 full-batch）。可选保守 polylog 因子 $\ln(kd/\varepsilon\delta)$ 实现高概率版本（`use_polylog=True`），默认关闭——期望级精度经实证已足够。下图用合成数据验证该定律：实测 TV(mini, true) 遵循 $\varepsilon \propto \sqrt{kd^2/S}$ 斜率。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
 
 除 EM 外，端到端 pipeline（TNG50-1、514 万恒星——自动分量选择、运动学分解、出版级可视化）总耗时 **22 s**（原 37 s）。
 
 ## 可视化风格
 
-所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：无衬线 Helvetica/Arial、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
+所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：衬线 Times New Roman + STIX 数学字体、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
 
 ## 测试
 
 ```bash
-python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py -q
+python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q
 ```
 
 - `tests/example_eoemin_cut.py` — 21 个测试，锁定能量截断算法在 19 个合成场景（有谷、无缝、均匀、噪声等）下的行为，含 TRUE（绿虚线）/ DETECTED（红实线）叠加可视化。
 - `tests/example_gaussian_mixture.py` — GMM/AutoGMM 行为测试及上述 N 缩放基准。
+- `tests/example_batch_size.py` — 18 个测试锁定 batch_size 理论：$k d^2/\varepsilon^2$ 公式及其缩放规律、fit 时自动推导、mini/full 收敛等价性的 **TV 距离**验证（同时对比 full-batch 模型与真实分布）、N 不变性、polylog 保守性，以及两张可视化图。
 
 ## 引用
 
 若本代码对您的研究有帮助，请引用相关文献：
 
 - **AutoGMM 方法**：（待发表时补充）
+- **batch_size 样本复杂度**：Ashtiani, Ben-David, Harvey, Liaw, Mehrabian & Plan 2020, [Near-optimal Sample Complexity Bounds for Robust Learning of Gaussian Mixtures via Compression Schemes](https://arxiv.org/abs/1710.05209)
 - **IllustrisTNG**：Nelson et al. 2019, [CompAC, 6, 2](https://ui.adsabs.harvard.edu/abs/2019ComAC...6....2N)
 - **Agama**：Vasiliev 2019, [MNRAS, 482, 1525](https://ui.adsabs.harvard.edu/abs/2019MNRAS.482.1525V)
 - **pynbody**：Pontzen et al. 2013, [ApJS, 239, 39](https://ui.adsabs.harvard.edu/abs/2018MNRAS.473.4025P)
