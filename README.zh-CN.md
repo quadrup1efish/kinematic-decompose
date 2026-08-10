@@ -256,8 +256,6 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 
 由 `tv_error` 参数直接控制（$\varepsilon$ 越小 → batch 越大 → mini-batch 解越接近 full-batch）。可选保守 polylog 因子 $\ln(kd/\varepsilon\delta)$ 实现高概率版本（`use_polylog=True`），默认关闭——期望级精度经实证已足够。下图用合成数据验证该定律：实测 TV(mini, true) 遵循 $\varepsilon \propto \sqrt{kd^2/S}$ 斜率。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
 
-除 EM 外，端到端 pipeline（TNG50-1、514 万恒星——自动分量选择、运动学分解、出版级可视化）总耗时 **22 s**（原 37 s）。
-
 ## 可视化风格
 
 所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：衬线 Times New Roman + STIX 数学字体、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
