@@ -20,8 +20,6 @@ Traditional kinematic decomposition methods (e.g., Abadi + JEHistogram) rely on 
 1. **Adaptive component discovery (AutoGMM)** — the number of Gaussian components is **discovered from the data, not prescribed**: morphology is classified first, residual phase-space regions that the mixture under-represents are detected via a likelihood-ratio criterion, and new components are added until the fit is adequate. The component count is therefore set by the data, never by hand.
 2. **Mini-batch EM with N-independent cost** — per-iteration cost scales with `batch_size` instead of the particle count N (~2000× faster per iteration at N = 10⁷), and the converged solutions are **statistically indistinguishable** from full-batch EM (Bayes factor ≈ 1, Jeffreys "no evidence").
 3. **Theory-grounded batch size** — the default batch size follows the near-optimal sample complexity of Gaussian mixtures, $\tilde{\Theta}(kd^2/\varepsilon^2)$ (Ashtiani et al. 2020), exposed as a `tv_error` parameter: $S = k\,d^2/\varepsilon^2$ (optional conservative polylog factor). No hand-tuned magic numbers.
-4. **Physically consistent circular angular momentum** — the $j_c$ interpolation uses a monotone upper envelope (cumulative maximum of the per-energy circular angular momenta), which is exact when the folded $L_c(E)$ of a cusped potential would otherwise produce unphysical $j_z/j_c \gg 1$.
-5. **Reproducible and robust** — `random_state` plumbed through the whole pipeline (identical inputs → identical decompositions), NaN-safe interpolation, optional mass-weighted EM, and TV-distance-based validation tests.
 
 
 ### Kinematic Phase Space
