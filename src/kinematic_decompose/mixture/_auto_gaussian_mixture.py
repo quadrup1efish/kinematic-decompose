@@ -5,7 +5,6 @@ from .util import JEHistogram, MAX_RADIUS, hist_bin_fd
 from ._gaussian_mixture import GaussianMixture as GM
 
 REG_COVAR = 1e-6
-MIN_MAHAL = 0.75
 MIN_WEIGHT = 0.01
 MAX_N_COMPONENTS = 15
 MIN_POINTS = 10
@@ -284,17 +283,7 @@ class AutoGaussianMixtureModel:
                 continue
 
             mean = pts.mean(axis=0)
-            
-            too_close = False
-            for mu, prec in zip(means, precisions):
-                diff = mean - mu
-                mahal = np.sqrt(diff @ prec @ diff)
-                if mahal < MIN_MAHAL:
-                    too_close = True
-                    break
-            if too_close:
-                continue
-            
+
             cov = np.cov(pts, rowvar=False)
             cov[np.diag_indices_from(cov)] += np.float32(REG_COVAR)
             prec = np.linalg.inv(cov)
