@@ -661,9 +661,13 @@ class GaussianMixture(BaseMixture):
         ``use_mini_batch=True``. If None, it is derived automatically from
         `tv_error` via the near-optimal sample complexity of learning a
         k-Gaussian mixture to TV error eps
-        (Ashtiani et al. 2020, Thm 1.5): n = polylog(kd/eps)*k*d^2/eps^2.
-        For the typical K=6, d=3, tv_error=0.05 this gives 21600 without
-        the polylog factor.
+        (Ashtiani et al. 2020, Thm 1.5): n = k*d^2/eps^2.
+        Here `k` is the **number of components of this model** (fit-time
+        `n_components`) and `d` is the **data dimensionality** (`X.shape[1]`),
+        both read from the actual problem at fit time -- never hard-coded.
+        (E.g. for the illustrative k=6, d=3, tv_error=0.05 this gives 21600
+        without the polylog factor, but the size always tracks the real
+        (k, d) of the data being fitted.)
 
     tv_error : float, default=0.05
         Target total-variation error eps controlling the automatically
