@@ -163,6 +163,10 @@ def _visualize_residual(X, means, covariances, extent):
     plt.show()
     return
 
+# Public alias (kept for API compatibility; the residual-map helper was
+# made private in a refactor but is still used by examples).
+visualize_residual = _visualize_residual
+
 def visualize_phase_space(X, means=None, covariances=None, ecut=-0.75, etacut=0.50, threshold_line=False, dims=2, ranges=None): 
     if means is not None and covariances is not None:
         ncs, dims = means.shape

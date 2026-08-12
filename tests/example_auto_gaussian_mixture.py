@@ -6,7 +6,7 @@ from matplotlib.colors import LogNorm
 from kinematic_decompose.mixture import *
 from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
 from kinematic_decompose.gravity.kinematic_solver import calculate_kinematic_param
-from kinematic_decompose.visualize import visualize_phase_space, visualize_residual, gaussian_ell 
+from kinematic_decompose.visualize import visualize_phase_space, gaussian_ell
 
 run = 'TNG50-1' 
 basePath = f"/Users/yuwa/sims.TNG/{run}/output"
