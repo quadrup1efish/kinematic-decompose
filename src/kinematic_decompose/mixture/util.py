@@ -3,6 +3,7 @@ import numpy as np
 from scipy.signal import find_peaks
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
+from sklearn.mixture import GaussianMixture as SkGM
 
 MAX_RADIUS = 10
 
@@ -111,6 +112,106 @@ def get_energy_criterion(pot, particle_radius, e,
         radius_cut = r[cut_idx]
         eoemin_cut = f_r(radius_cut)
     return eoemin_cut
+
+def _gmm_intersection(w1, m1, s1, w2, m2, s2):
+    """Solve w1*N(e;m1,s1) = w2*N(e;m2,s2) for e (log-space quadratic).
+    Returns all real roots; the ecut candidate is the root between the means."""
+    a = 0.5 * (1.0 / s2**2 - 1.0 / s1**2)
+    b = m1 / s1**2 - m2 / s2**2
+    c = np.log(w1 * s2 / (w2 * s1)) + m2**2 / (2 * s2**2) - m1**2 / (2 * s1**2)
+    roots = []
+    if abs(a) < 1e-12:                      # equal sigmas -> linear equation
+        if abs(b) > 1e-12:
+            roots = [-c / b]
+    else:
+        disc = b**2 - 4 * a * c
+        if disc >= 0:
+            sq = np.sqrt(disc)
+            roots = [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]
+    return sorted(r for r in roots if np.isfinite(r))
+
+
+def get_Ecut_gmm(eb, masses=None, seed=0, max_iter=200, n_init=5):
+    """Ecut from a 2-component Gaussian-mixture fit of the energy distribution.
+
+    The bound component (low e) and the disk (high e) are modelled as two
+    1-D Gaussians; the cut is their analytic intersection
+    (w1*N(e;m1,s1) = w2*N(e;m2,s2)), i.e. the equal-posterior boundary.
+
+    The two-component fit is gated: K=2 is accepted if ICL (Integrated
+    Complete Likelihood, Biernacki et al. 2000) prefers it OR the fitted
+    components are well separated (peak distance >= 2 sigma of the wider
+    peak). The ICL entropy term penalises fuzzy assignments, so unimodal /
+    monotonic distributions and strongly overlapping peaks are rejected and
+    0 is returned -- a conservative gate. The separation escape catches
+    asymmetric-weight bimodals that sit at the ICL decision boundary.
+
+    Returns
+    -------
+    float : the energy cut, or 0 if fewer than 100 particles, the ICL gate
+    rejects the two-component fit, or the intersection falls outside the
+    fitted energy window.
+    """
+    eb = np.asarray(eb, float)
+    eb = eb[np.isfinite(eb)]
+    if len(eb) < 100:
+        return 0.0
+
+    m_E = np.quantile(eb, 0.01)
+    M_E = np.quantile(eb, 0.9)
+    e = eb[(eb >= m_E) & (eb <= M_E)]
+    if len(e) < 100:
+        return 0.0
+    X = e[:, None]
+
+    g1 = SkGM(n_components=1, covariance_type="full", random_state=seed,
+              n_init=n_init, init_params="kmeans", max_iter=max_iter).fit(X)
+    g2 = SkGM(n_components=2, covariance_type="full", random_state=seed,
+              n_init=n_init, init_params="kmeans", max_iter=max_iter).fit(X)
+
+    # ---- gate: accept K=2 if ICL prefers it OR the components are
+    # well separated (asymmetric-weight bimodals sit at the ICL decision
+    # boundary; a clear separation is evidence of two real components) ----
+    def _icl(g):
+        n = len(X)
+        lnL = g.score(X) * n
+        k_params = g.means_.size + g.covariances_.size + g.weights_.size - 1
+        z = g.predict_proba(X)
+        ent = np.sum(z * np.log(np.clip(z, 1e-300, 1.0)))   # <= 0
+        return 2.0 * lnL - k_params * np.log(n) + 2.0 * ent
+
+    w = g2.weights_
+    mu = g2.means_.ravel()
+    sd = np.sqrt(g2.covariances_.ravel())
+    order = np.argsort(mu)
+    w1, m1, s1 = w[order[0]], mu[order[0]], sd[order[0]]
+    w2, m2, s2 = w[order[1]], mu[order[1]], sd[order[1]]
+
+    icl_accept = _icl(g2) > _icl(g1)
+    sep = abs(m1 - m2) / max(s1, s2)
+    # ICL is the primary judge: strong rejections (ramp / overlapping, ICL
+    # far below K=1) must stay rejected. The separation escape only rescues
+    # the near-boundary case (asymmetric-weight bimodal where ICL jitters
+    # around the decision threshold) -- a clearly separated pair of peaks is
+    # evidence of two real components even when ICL is marginally negative.
+    icl_delta = _icl(g2) - _icl(g1)
+    if not (icl_accept or (icl_delta > -500.0 and sep >= 2.0)):
+        return 0.0
+
+    # ---- analytic intersection of the two Gaussians ----
+    roots = _gmm_intersection(w1, m1, s1, w2, m2, s2)
+    cands = [r for r in roots if m1 < r < m2]
+    if cands:
+        ecut = cands[0]
+    elif roots:
+        ecut = roots[np.argmin([abs(r - 0.5 * (m1 + m2)) for r in roots])]
+    else:
+        ecut = 0.5 * (m1 + m2)
+
+    if not (m_E - 0.05 <= ecut <= M_E + 0.05):
+        return 0.0
+    return float(ecut)
+
 
 def get_Ecut(eb, masses, nbins = 25,M_bin=400,m_bin=80,toll=1.5,shrink=2,Mmin = 0.05,Emin = -0.9):
     
