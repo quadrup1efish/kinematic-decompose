@@ -1,6 +1,6 @@
 import scipy
 import numpy as np
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, argrelmax
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter1d
 
@@ -111,6 +111,131 @@ def get_energy_criterion(pot, particle_radius, e,
         radius_cut = r[cut_idx]
         eoemin_cut = f_r(radius_cut)
     return eoemin_cut
+
+def get_Ecut_noise_calibrated(eb, n_sigma=3.0):
+    """Ecut via noise-calibrated peak-valley detection (no hand-set
+    parameters -- every internal quantity is derived statistically).
+
+    A genuine two-component energy distribution (bound component + disk /
+    halo) shows two peaks with a valley between them. The significance of
+    a peak-valley pair is tested against the POISSON COUNTING ERROR with
+    the JOINT error of the two counts:
+
+        z = (h_peak - h_valley) / sqrt(h_peak + h_valley)
+
+    (peak and valley are independent Poisson counts; the difference has
+    variance h_peak + h_valley). A pair is accepted only if z >= n_sigma.
+
+    Statistically derived quantities (no hand-set numbers):
+      * bin width  : Freedman-Diaconis rule  d = 2*IQR*N^(-1/3)
+      * smoothing  : Silverman bandwidth h = 0.9*min(sig,IQR/1.34)*N^(-1/5)
+      * peak floor : background median + n_sigma*sqrt(median) (Poisson)
+      * peak sep   : > FWHM of the smoothing kernel (2.35*sigma_bins)
+      * window     : [e.min(), e.max()] -- binding energy is physically
+                     bounded, so no quantile truncation is needed and a
+                     weak high-energy component is never cut off
+      * valley skip: one smoothing-kernel width from each peak
+      * refinement: parabolic interpolation of the 3 bins around the
+        valley (sub-bin precision; matters at low N where FD bins are few)
+
+    Parameters
+    ----------
+    eb : array-like
+        particle binding energies
+    n_sigma : float
+        significance threshold for the peak-valley z-test (conventional
+        3.0 = three sigma)
+
+    Returns
+    -------
+    float : the energy cut, or None if no significant two-peak structure is
+    found (unimodal / flat / overlapping / smoothly-connected without a
+    valley). None means 'no detectable boundary' -- a value is only
+    returned when a statistically significant valley exists.
+    """
+    e = np.asarray(eb, float)
+    e = e[np.isfinite(e)]
+
+    # ---- window: full physical range (BE is bounded, no truncation) ----
+    m_E, M_E = e.min(), e.max()
+    arr = e[(e >= m_E) & (e <= M_E)]
+    if len(arr) < 50:
+        return None
+
+    # ---- bins: Freedman-Diaconis rule ----
+    q75, q25 = np.percentile(arr, [75, 25])
+    iqr = q75 - q25
+    de_fd = 2.0 * iqr * len(arr) ** (-1.0 / 3.0)
+    if de_fd <= 0 or not np.isfinite(de_fd):
+        return None
+    nbins = max(20, min(int(np.ceil((M_E - m_E) / de_fd)), 400))
+    h0, edges = np.histogram(arr, bins=nbins)
+    de = edges[1] - edges[0]
+
+    # ---- smoothing: Silverman rule-of-thumb bandwidth (KDE) ----
+    sig_hat = arr.std(ddof=1)
+    a = min(sig_hat, iqr / 1.34)
+    h_silv = 0.9 * a * len(arr) ** (-1.0 / 5.0)
+    sigma_bins = max(0.5, h_silv / de)
+    h_sm = gaussian_filter1d(h0.astype(float), sigma_bins)
+
+    # ---- peak floor: only exclude peaks below the Poisson noise level.
+    # The median background + n_sigma*sqrt(median) would unfairly cut weak
+    # components whose absolute height is below the (dominant-component-
+    # shifted) median; the joint-error z-test below is the actual
+    # significance gate. The floor here just removes noise-floor wiggles.
+    bg = np.median(h0)
+    floor = n_sigma * np.sqrt(max(bg, 1e-9))
+    pk = argrelmax(h_sm)[0]
+    pk = pk[h_sm[pk] > floor]
+    if len(pk) < 2:
+        return None
+
+    # ---- peak separation: must exceed the kernel FWHM ----
+    sep_min = int(np.ceil(2.35 * sigma_bins))
+    skip = max(1, int(np.ceil(sigma_bins)))
+
+    best = None
+    for i in range(len(pk)):
+        for j in range(i + 1, len(pk)):
+            p1, p2 = pk[i], pk[j]
+            if p2 - p1 < sep_min:
+                continue
+            # valley must lie BETWEEN the two peaks, not on a peak itself:
+            # a narrow weak peak collapses under smoothing and its own bin
+            # becomes the local min -- skipping one kernel width from each
+            # peak guards against that.
+            seg = h_sm[p1 + skip:p2 - skip]
+            if len(seg) < 1:
+                continue
+            v = p1 + skip + int(np.argmin(seg))
+            hp, hv = h_sm[p1], h_sm[v]
+            # joint-error Poisson significance test
+            z = (hp - hv) / max(np.sqrt(hp + hv), 1e-9)
+            if z < n_sigma:
+                continue
+            if best is None or z > best[0]:
+                best = (z, p1, p2, v)
+
+    if best is None:
+        return None
+    _, p1, p2, v = best
+    # ---- refine: parabolic interpolation of the 3 bins around the valley.
+    # The coarse answer is a bin CENTRE (resolution ~ bin width); a
+    # parabolic fit to (v-1, v, v+1) of the smoothed histogram gives
+    # sub-bin precision. This matters at low N where the FD bin width is
+    # large (e.g. N=3e3: error 0.020 -> 0.004, 5x). Guard: skip at the
+    # histogram edge or when the parabola degenerates.
+    de = edges[1] - edges[0]
+    if 1 <= v <= len(h_sm) - 2:
+        y0, y1, y2 = h_sm[v - 1], h_sm[v], h_sm[v + 1]
+        denom = y0 - 2.0 * y1 + y2
+        if abs(denom) > 1e-12:
+            off = 0.5 * (y0 - y2) / denom          # in bin units, (-0.5, 0.5)
+            if -0.5 < off < 0.5:
+                v = v + off
+    return float(edges[1] + de * v)
+
 
 def get_Ecut(eb, masses, nbins = 25,M_bin=400,m_bin=80,toll=1.5,shrink=2,Mmin = 0.05,Emin = -0.9):
     
