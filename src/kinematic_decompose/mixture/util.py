@@ -6,6 +6,18 @@ from scipy.ndimage import gaussian_filter1d
 
 MAX_RADIUS = 10
 
+
+def separation_index(mode1, mode2, sigma1, sigma2):
+    """Ashman separation coefficient (Ashman, Bird & Zepf 1994, AJ 108:2348):
+    sep = |mode2 - mode1| / sqrt(sigma1^2 + sigma2^2).
+
+    Criterion (user-decided): sep >= 1 => the two peaks are separated by
+    more than one combined sigma -> a RESOLVABLE bimodal signal; sep < 1
+    unresolvable (unimodal / one component covers the other). Use as a
+    reporting/screening metric for two-component decompositions."""
+    return abs(mode2 - mode1) / np.sqrt(sigma1 * sigma1 + sigma2 * sigma2)
+
+
 def hist_bin_fd(x):
     iqr = np.subtract(*np.percentile(x, [75, 25]))
     return 2.0 * iqr * x.size ** (-1.0 / 3.0)
