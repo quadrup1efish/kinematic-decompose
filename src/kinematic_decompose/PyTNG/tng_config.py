@@ -13,6 +13,13 @@ UnitComvingLength = units.a * UnitLength
 UnitPressure = (UnitMass / UnitLength) * (units.km / units.s / units.kpc) ** 2
 UnitNo = units.no_unit
 
+# Single precision for particle data (positions, velocities, masses).
+# TNG stores velocities/masses as float32 and loadSubset(..., float32=True)
+# down-casts coordinates too, so float32 is the native file precision.
+# Keeping *every* particle array in one dtype matters: pynbody's KDTree
+# (built by plot.image / SPH quantities) rejects mismatched pos/mass dtypes.
+PARTICLE_DTYPE = np.float32
+
 def get_particle_field_unit(field: str) -> units.Unit:
     field_units = {
         'CenterOfMass': UnitComvingLength,
@@ -267,3 +274,28 @@ def get_eps_mDM(properties) -> tuple[SimArray, SimArray]:
         ), SimArray(
             MatchRun[properties['run']][1], 1e10 * units.Msol / units.h
         )
+
+
+"""
+enforce_dtype.py
+"""
+def enforce_dtype(sim, dtype=PARTICLE_DTYPE):
+    """Uniformly cast every particle array on a pynbody snapshot to *dtype*.
+
+    pynbody stores arrays on the top-level SimSnap (``sim._arrays``) and
+    views them per-family; casting there fixes all families at once.
+    This keeps pos/vel/mass in one dtype, which the KDTree used by
+    ``plot.image`` / SPH quantities requires (it rejects mismatched
+    pos/mass dtypes).
+
+    Returns the list of array names that were changed.
+    """
+    changed = []
+    arrays = getattr(sim, '_arrays', None)
+    if arrays is None:
+        return changed
+    for name, arr in list(arrays.items()):
+        if arr.dtype != dtype:
+            arrays[name] = SimArray(arr.astype(dtype), units=arr.units, sim=sim)
+            changed.append(name)
+    return changed

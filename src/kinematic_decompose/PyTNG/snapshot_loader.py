@@ -1,7 +1,7 @@
 from functools import reduce
 import warnings
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from collections.abc import Iterable
 from contextlib import contextmanager
 
@@ -15,6 +15,28 @@ from pynbody.array import SimArray
 from pynbody.simdict import SimDict
 from pynbody.snapshot.simsnap import SimSnap
 
+# ---------------------------------------------------------------------------
+# numpy >= 2 compat: numpy 2.x removed ndarray.__round__, but pynbody's
+# renderers (pynbody/sph/renderers.py:_calculate_wrapping_repeat_array)
+# still call round(SimArray) when the snapshot has a boxsize. Without this
+# shim, pynbody.plot.image() raises
+#     TypeError: type SimArray doesn't define __round__ method
+# for *any* loader path (load_particle and load_cutout alike) on numpy 2.x.
+# Upstream has not fixed this as of pynbody 2.5.0.
+# ---------------------------------------------------------------------------
+def _simarray_round(self, ndigits=None):
+    if ndigits is None:
+        return np.round(self)
+    return np.round(self, ndigits)
+
+if not hasattr(SimArray, '__round__'):
+    SimArray.__round__ = _simarray_round  # type: ignore[attr-defined]
+    warnings.warn(
+        "PyTNG: monkey-patched SimArray.__round__ for numpy>=2 compatibility "
+        "(pynbody renderers require it).",
+        RuntimeWarning,
+    )
+
 from .illustris_python.util import partTypeNum
 
 # Side-effect imports: importing these modules registers the pynbody
@@ -24,16 +46,29 @@ from .illustris_python.util import partTypeNum
 from . import extension  # noqa: F401
 from . import derived_array  # noqa: F401
 from . import simdict_getter  # noqa: F401
-from .tng_config import (UnitComvingLength, get_eps_mDM,
+from .tng_config import (UnitComvingLength, enforce_dtype, get_eps_mDM,
                          get_groupcat_field_unit, get_particle_field_name,
                          get_particle_field_unit)
+from .cutout_loader import (find_cutout_file, header_to_properties,
+                            infer_run_from_dir, load_cutout as _load_cutout,
+                            parse_cutout_filename)
 
 
 class Snapshot():
-    def __init__(self, basePath, snapNum):
+    def __init__(self, basePath, snapNum, header_source='output'):
         self.basePath = basePath
         self.snapNum  = snapNum 
-        self._set_snapshot_properties()
+        if header_source == 'output':
+            self._set_snapshot_properties()
+        elif header_source == 'cutout':
+            # Properties are populated from the cutout file's own Header
+            # group inside load_cutout(); no full-snapshot metadata needed.
+            self.properties = SimDict()
+        else:
+            raise ValueError(
+                f"Unknown header_source '{header_source}': use "
+                "'output' (full snapshot) or 'cutout'."
+            )
         self._original_transform = None
 
         self.group_catalog = SimDict()
@@ -155,7 +190,100 @@ class Snapshot():
             self.container.dm['mass'] = SimArray(
                     np.full(len(self.container.dm), self.container.properties['mDM']),
                     units=get_particle_field_unit('Masses'))
+
+        # Ensure every particle array shares the project-wide dtype
+        # (PARTICLE_DTYPE). pynbody's KDTree (plot.image / SPH quantities)
+        # rejects mismatched pos/mass dtypes, and loadSubset data can be
+        # float32 while the pre-created 'pos' array is not.
+        enforce_dtype(self.container)
         return self.container
+
+    def load_cutout(self, ID, snapNum=None, cutout_dir=None,
+                    fields: Optional[List[str]] = None,
+                    float32=True, header_source='cutout'):
+        """Load particle data from a cutout HDF5 file.
+
+        This is the cutout counterpart of :meth:`load_particle`: instead of
+        reading slices of the full snapshot directory via illustris_python
+        offsets, it loads the self-contained cutout file produced for a
+        single subhalo, and builds the same kind of pynbody container.
+
+        Naming convention (standard)::
+
+            snapNum_{snapNum}_subID_{subID}_fields_{field1}_{field2}...hdf5
+
+        e.g. ``snapNum_99_subID_550475_fields_Coordinates_Velocities_Masses.hdf5``
+        Legacy ``sub{ID}_snap{snapNum}_{fields}.hdf5`` names are also
+        recognised (see :mod:`cutout_loader`).
+
+        Parameters
+        ----------
+        ID : int
+            Subhalo (or group) ID the cutout was requested for.
+        snapNum : int, optional
+            Snapshot number. Defaults to the one given at construction.
+        cutout_dir : str, optional
+            Directory containing cutout files. Defaults to
+            ``<basePath>/cutouts`` (or ``<parent-of-basePath>/cutouts``
+            when basePath points at the ``output`` directory).
+        fields : list of str or None
+            Raw dataset names to load (e.g. ``['Coordinates',
+            'Velocities', 'Masses']``). ``None`` (default) reads them
+            from the filename; ``'default'`` is accepted as an alias for
+            ``None``; an empty list loads every dataset present.
+        float32 : bool
+            Down-cast float64 coordinates to float32 (matches the
+            full-snapshot path behaviour).
+        header_source : str
+            Must be ``'cutout'`` (properties come from the file's own
+            Header group). Passed through to the constructor when invoked
+            on a fresh instance.
+
+        Returns
+        -------
+        pynbody.SimSnap
+            The loaded container, also registered on ``self.container``.
+        """
+        import os
+
+        if snapNum is None:
+            snapNum = self.snapNum
+
+        if cutout_dir is None:
+            cutout_dir = self._default_cutout_dir()
+
+        if fields == 'default':
+            fields = None
+        fields_param = fields  # None -> scan dir; list -> standard name first
+
+        path = find_cutout_file(cutout_dir, snapNum, ID, fields=fields_param)
+        run = infer_run_from_dir(cutout_dir, basePath=self.basePath)
+        container, info = _load_cutout(
+            path, run=run, fields=fields, float32=float32)
+
+        # mirror the state load_particle leaves behind, so __getitem__,
+        # center(), faceon(), ... keep working on the same instance
+        self.ID = self._parse_id(ID)
+        self.container = container
+        self.properties = container.properties
+        self.snap_offsets_lenType = {single_id: {} for single_id in self.ID}
+        self.galaxy_index = {
+            single_id: {
+                fam: slice(0, n)
+                for fam, n in info["NumPart"].items()
+            }
+            for single_id in self.ID
+        }
+        self.partTypes = list(info["NumPart"].keys())
+        return self.container
+
+    def _default_cutout_dir(self):
+        import os
+
+        bp = self.basePath.rstrip('/')
+        if bp.endswith('/output'):
+            return os.path.join(os.path.dirname(bp), 'cutouts')
+        return os.path.join(bp, 'cutouts')
     
     def load_group_catalog(self, ID, groupType='Subhalo'):
         """

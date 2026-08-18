@@ -379,6 +379,7 @@ ContainerWithPhysicalUnitsOption.physical_units = physical_units
 
 from pynbody import family
 from pynbody.snapshot import SimSnap
+from .tng_config import PARTICLE_DTYPE
 
 def new(n_particles = 0, order = None, class_ = SimSnap, **families) -> SimSnap:
     """Create a blank SimSnap, with the specified number of particles.
@@ -421,8 +422,16 @@ def new(n_particles = 0, order = None, class_ = SimSnap, **families) -> SimSnap:
     x._num_particles = tot_particles
     x._filename = "<created>"
 
-    x._create_arrays(["pos"], 3)
-    #x._create_arrays(["mass"], 1)
+    # Only 'pos' is pre-created, and in the project-wide particle dtype
+    # (PARTICLE_DTYPE, float32) — matching the float32 semantics of the
+    # vel/mass arrays filled afterward by load_particle (loadSubset
+    # float32=True) and load_cutout (raw file dtypes). Pre-creating
+    # mass/vel is skipped to save memory; they are created on first fill.
+    # Keeping every particle array in one dtype matters: pynbody's KDTree
+    # (built by plot.image / SPH quantities) rejects mismatched pos/mass
+    # dtypes.
+    x._create_arrays(["pos"], 3, PARTICLE_DTYPE)
+    # x._create_arrays(["mass"], 1)  # skipped to save memory
 
     rt = 0
     for k, v in t_fam:
