@@ -5,6 +5,9 @@ build/
 dist/
 wheels/
 *.egg-info
+src/kinematic_decompose/potential/_potential*.so
+src/kinematic_decompose/potential/native/GSL-COPYING
+src/kinematic_decompose/potential/native/gsl-*.tar.gz
 
 # Virtual environments
 .venv

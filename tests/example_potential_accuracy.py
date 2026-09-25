@@ -1,4 +1,4 @@
-import agama
+import os
 from time import time
 import numpy as np
 import matplotlib.pyplot as plt
@@ -30,7 +30,8 @@ print(f"Multipole time = {t1:.3f}s")
 # Method 2: Direct N-body summation
 units.G = 4.30091e-6 * units.Unit('kpc Msol**-1 km**2 s**-2')
 start = time()
-eps = np.repeat(galaxy.properties['eps'], len(galaxy['mass']))
+# pynbody.gravity.direct requires its per-particle softening buffer as float32.
+eps = np.full(len(galaxy['mass']), galaxy.properties['eps'], dtype=np.float32)
 phi, accel = gravity.direct(galaxy, galaxy['pos'].view(np.ndarray), eps)
 phi = phi.in_units('km**2 s**-2')
 t2 = time() - start
@@ -59,7 +60,15 @@ ax.legend()
 
 ax = axes[1]
 relative_error = (multipole_comp - phi_comp) / phi_comp
-ax.semilogx(phi_comp, relative_error, '.', alpha=0.5, markersize=2)
+relative_error_values = np.asarray(relative_error, dtype=float)
+finite_error = relative_error_values[np.isfinite(relative_error_values)]
+print(
+    "Relative-error summary: "
+    f"median={np.median(finite_error):+.4f}, "
+    f"p95(|error|)={np.percentile(np.abs(finite_error), 95):.4f}, "
+    f"|error|<10%={np.mean(np.abs(finite_error) < 0.1):.3%}"
+)
+ax.semilogx(phi_comp, relative_error_values, '.', alpha=0.5, markersize=2)
 ax.axhline(y=0, color='r', linestyle='--')
 ax.axhline(y=0.1, color='gray', linestyle=':', alpha=0.75)
 ax.axhline(y=-0.1, color='gray', linestyle=':', alpha=0.75)
@@ -67,4 +76,8 @@ ax.set_xlabel('-phi (direct) [km²/s²]')
 ax.set_ylabel('Relative error')
 ax.set_title('Relative Error (multipole - direct) / direct')
 plt.tight_layout()
+figure_path = os.environ.get('POTENTIAL_ACCURACY_FIGURE')
+if figure_path:
+    fig.savefig(figure_path, dpi=300, bbox_inches='tight')
+    print(f"Saved figure: {figure_path}")
 plt.show()

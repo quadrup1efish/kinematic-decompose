@@ -2,13 +2,17 @@
 name = "kinematic-decompose"
 version = "0.1.0"
 description = "Add your description here"
+license = "GPL-3.0-or-later"
+license-files = [
+    "src/kinematic_decompose/potential/native/agama/LICENSE",
+    "src/kinematic_decompose/potential/native/GSL-COPYING",
+]
 readme = "README.md"
 authors = [
     { name = "quadrup1efish", email = "lty13313730458@gmail.com" }
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "agama>=1.0.0",
     "matplotlib>=3.10.8",
     "numpy>=2.4.4",
     "pandas>=3.0.2",
@@ -20,9 +24,12 @@ dependencies = [
     "setuptools>=82.0.1",
 ]
 
+[project.optional-dependencies]
+agama-compat = ["agama>=1.0.0"]
+
 [project.scripts]
 kinematic-decompose = "kinematic_decompose:main"
 
 [build-system]
-requires = ["uv_build>=0.11.3,<0.12.0"]
-build-backend = "uv_build"
+requires = ["setuptools==82.0.1", "wheel==0.41.2", "pybind11==2.13.6"]
+build-backend = "setuptools.build_meta"

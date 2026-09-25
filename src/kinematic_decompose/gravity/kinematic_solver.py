@@ -4,12 +4,10 @@ from pynbody import units
 from pynbody.array import SimArray
 from pynbody.snapshot.simsnap import SimSnap
 
-import agama
-agama.setNumThreads(1)
-# NOTE: units(1,1,1) means all inputs/outputs are in code units; the caller
-# must convert the snapshot to physical units (kpc / km s^-1 / Msol) first
-# so that the numerical values match the units attached to the arrays below.
-agama.setUnits(length=1, mass=1, velocity=1)
+from kinematic_decompose.potential import Potential, setUnits
+
+# Keep the project unit convention unchanged from the former Agama backend.
+setUnits(length=1, mass=1, velocity=1)
 
 # Multipole components for the galaxy potential model: (family, symmetry,
 # lmax). dm is treated as spherical (lmax=0, monopole only) since its
@@ -21,18 +19,23 @@ _GALAXY_POTENTIAL_COMPONENTS = [
     ('s',   'a', 4),
 ]
 
+# TNG publishes collisionless softenings as Plummer-equivalent lengths.  The
+# cubic-spline kernel used by the patched Agama source is Newtonian at
+# h = 2.8 * epsilon_Plummer.
+_KERNEL_SUPPORT_PER_PLUMMER_EQUIVALENT = 2.8
+
 def create_multipole_potential(
     positions: np.ndarray,
     masses: np.ndarray,
-    eps: float = 0.39,
+    softening: float | None = None,
     symmetry: str = 'a',
-    rmin: float = 1e-2,
+    rmin: float | None = None,
     rmax: float = 0,
     lmax: int = 4,
     gridsizeR: int = 40,
     export: bool = False,
     filename: str|None = None
-) -> agama.Potential:
+) -> Potential:
     """
     Compute gravitational potential field using Agama's multipole expansion.
     
@@ -42,23 +45,26 @@ def create_multipole_potential(
     Args:
         positions: Particle positions array of shape (N, 3) [required]
         masses: Particle masses array of shape (N,) [required]
-        eps: Smoothing length parameter (default: 0.39)
+        softening: Cubic-spline kernel support radius [kpc]. If None, use
+            Agama's original point-particle source.
         symmetry: Symmetry type: 's' (spherical), 'a' (axisymmetric), 
                  or 'n' (none) (default: 'a')
-        rmin: Minimum radius for potential evaluation (default: 1e-2)
+        rmin: Innermost radial grid node. If omitted, softened particles use
+            Agama's automatic choice (equivalent to 0), while point particles
+            retain the legacy 1e-2 default.
         lmax: Maximum angular order of expansion (default: 4)
         gridsizeR: Number of radial grid points (default: 40)
         export: Whether to export potential to file (default: False)
         filename: Output filename if export=True (default: auto-generated)
     
     Returns:
-        agama.Potential: Potential object for gravity calculations
+        Potential: Potential object for gravity calculations
     
     Raises:
         ValueError: If input arrays have inconsistent shapes
     
     Example:
-        >>> pot = multipole_expansion(positions, masses, eps=0.5, lmax=6)
+        >>> pot = create_multipole_potential(positions, masses, softening=0.5, lmax=6)
         >>> force = pot.force(1.0, 0.0, 0.0)
     """
     # Input validation
@@ -68,28 +74,35 @@ def create_multipole_potential(
     if positions.shape[1] != 3:
         raise ValueError(f"positions must have shape (N, 3), got {positions.shape}")
     
-    # Create potential
-    pot = agama.Potential(
+    if rmin is None:
+        rmin = 0 if softening is not None else 1e-2
+    potential_args = dict(
         type='Multipole',
         particles=(positions, masses),
         symmetry=symmetry,
-        smoothing=eps,
         rmin=rmin,
         rmax=rmax,
         lmax=lmax,
         gridsizeR=gridsizeR
     )
+    if softening is not None:
+        if softening <= 0:
+            raise ValueError(f"softening must be positive, got {softening}")
+        potential_args['softening'] = softening
+    # Create potential
+    pot = Potential(**potential_args)
     
     # Export if requested
     if export:
         if filename is None:
-            filename = f"multipole_sym{symmetry}_eps{eps}_lmax{lmax}.txt"
+            filename = f"multipole_sym{symmetry}_lmax{lmax}.txt"
         pot.export(filename)
     
     return pot
 
 def construct_galaxy_potential_model(galaxy):
     eps = galaxy.properties.get('eps', 0.39)
+    kernel_support = _KERNEL_SUPPORT_PER_PLUMMER_EQUIVALENT * eps
 
     potentials = []
 
@@ -109,9 +122,9 @@ def construct_galaxy_potential_model(galaxy):
 
         pot = create_multipole_potential(
             pos, mass,
-            eps=eps,
+            softening=kernel_support,
             symmetry=symmetry,
-            rmin=2*eps,
+            rmin=0,
             rmax=galaxy.R_vir,
             lmax=lmax,
             gridsizeR=30
@@ -121,12 +134,12 @@ def construct_galaxy_potential_model(galaxy):
     if not potentials:
         raise ValueError("No valid potential components (all particle sets too small).")
 
-    return agama.Potential(*potentials)
+    return Potential(*potentials)
 
 
 def calculate_kinematic_param(
     galaxy: SimSnap,
-    potential: agama.Potential | None = None,
+    potential: Potential | None = None,
     partType: str = 'star',
     filename: str | None = None
 ) -> SimSnap:
@@ -137,7 +150,7 @@ def calculate_kinematic_param(
 
     Args:
         galaxy: Galaxy snapshot with position and velocity data (must be in
-            physical units, see module note on agama.setUnits)
+            physical units (the backend applies its Agama-compatible `setUnits` scaling)
         potential: Pre-computed potential; if None, built from the galaxy
             particle distribution (unless `filename` is given)
         partType: Family to attach the circular angular momentum to
@@ -152,7 +165,7 @@ def calculate_kinematic_param(
         if filename is None:
             potential = construct_galaxy_potential_model(galaxy)
         else:
-            potential = agama.Potential(filename)
+            potential = Potential(filename)
     assert potential is not None  # built / loaded / passed in all branches
     # 2. Compute particle potentials
     galaxy['phi'] = SimArray(

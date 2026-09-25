@@ -84,20 +84,24 @@ kinematic-decompose/
 
 ## 安装
 
+如果需要在 Conda `resonance` 环境中同时使用标准 `agama` 和仓库内带 resonance
+扩展的 AGAMAb B 版，请先阅读 [`bar_structure_decomposition/README_RESONANCE_CONDA.zh-CN.md`](bar_structure_decomposition/README_RESONANCE_CONDA.zh-CN.md)。
+该方案使用 `import agama` 和 `import agamab` 两个明确的模块名，不覆盖现有标准包。
+
 ### 系统要求
 
 - Python ≥ 3.11
-- [Agama](https://github.com/GalacticDynamics-Oxford/Agama)（星系动力学库）
+- [Agama](https://github.com/GalacticDynamics-Oxford/Agama)（可选，仅用于差分兼容性测试）
 - [pynbody](https://pynbody.github.io/)（N-body/SPH 快照分析）
 - [IllustrisTNG](https://www.tng-project.org/) 模拟数据访问权限
 
-### 使用 uv 安装
+### 安装
 
-```bash
-uv pip install -e .
-```
+项目内置的 native potential backend 会自动下载并静态编译固定版本的 GSL 2.8；使用者不需要自行安装 GSL。首次构建需要 C/C++ 编译器、`make` 和网络，之后会复用本机缓存。Python 依赖由 `uv.lock` 锁定。请按 [native backend 构建说明](src/kinematic_decompose/potential/native/README.md) 操作，再运行 `uv sync --locked`。
 
-在 macOS 上，如果 Agama 通过 Homebrew 安装，可能需要设置：
+正常安装和运行 pipeline 不需要 Agama。只有运行可选的差分兼容性测试时，才使用 `uv sync --locked --extra agama-compat` 安装该 extra。
+
+仅在 macOS 上使用 Homebrew 版 Agama 运行可选兼容性测试时，可能需要设置：
 
 ```bash
 export DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib
@@ -143,7 +147,7 @@ snapshot.GC_physical_units()
 snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
 snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50])
 
-# 2. 构建引力势（Agama Multipole）
+# 2. 构建引力势（项目内置的 Agama 兼容 Multipole）
 pot = construct_galaxy_potential_model(galaxy)
 
 # 3. 计算运动学参数（φ, j_c, e/|e|_max, j_z/j_c, j_p/j_c）
@@ -204,7 +208,7 @@ visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_
 
 | 包 | 最低版本 | 用途 |
 |------|----------------|--------|
-| `agama` | ≥ 1.0.0 | 引力势（多极展开） |
+| `agama` | 可选 `agama-compat` extra | 差分兼容性测试参考实现；运行 pipeline 不需要 |
 | `numpy` | ≥ 2.4.0 | 数值计算 |
 | `scipy` | ≥ 1.17.0 | 统计、插值、优化 |
 | `scikit-learn` | ≥ 1.8.0 | GMM 基础实现 |
@@ -282,4 +286,4 @@ python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py t
 
 ## 许可证
 
-本项目基于 BSD-3-Clause 许可证。`mixture/_gaussian_mixture.py` 和 `mixture/_base.py` 中的 GMM 实现源自 scikit-learn（BSD-3-Clause）。
+包含静态链接 GSL 2.8 的可分发软件包（包括 native potential 扩展）采用 GPL-3.0-or-later。与 Agama 的处理方式一致，这不会改变 Agama 原始源码片段各自的 BSD/MIT 许可；分发时须保留随附声明。`mixture/_gaussian_mixture.py` 和 `mixture/_base.py` 中的 GMM 实现源自 scikit-learn（BSD-3-Clause），再分发时须保留各组件的许可声明。

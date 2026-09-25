@@ -1,0 +1,5 @@
+recursive-include src/kinematic_decompose/potential/native/agama/src *.h *.cpp
+include src/kinematic_decompose/potential/native/README.md
+include src/kinematic_decompose/potential/native/agama/LICENSE
+include src/kinematic_decompose/potential/native/GSL-COPYING
+include src/kinematic_decompose/potential/native/gsl-*.tar.gz

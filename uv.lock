@@ -362,7 +362,6 @@ name = "kinematic-decompose"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "agama" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "pandas" },
@@ -374,9 +373,14 @@ dependencies = [
     { name = "setuptools" },
 ]
 
+[package.optional-dependencies]
+agama-compat = [
+    { name = "agama" },
+]
+
 [package.metadata]
 requires-dist = [
-    { name = "agama", specifier = ">=1.0.0" },
+    { name = "agama", marker = "extra == 'agama-compat'", specifier = ">=1.0.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=2.4.4" },
     { name = "pandas", specifier = ">=3.0.2" },
@@ -387,6 +391,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "setuptools", specifier = ">=82.0.1" },
 ]
+provides-extras = ["agama-compat"]
 
 [[package]]
 name = "kiwisolver"

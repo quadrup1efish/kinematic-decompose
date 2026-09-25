@@ -83,20 +83,26 @@ kinematic-decompose/
 
 ## Installation
 
+For using the standard `agama` package together with the repository's
+resonance-enabled AGAMAb B build in the Conda environment `resonance`, see
+[`bar_structure_decomposition/README_RESONANCE_CONDA.zh-CN.md`](bar_structure_decomposition/README_RESONANCE_CONDA.zh-CN.md).
+The two APIs intentionally use `import agama` and `import agamab` and do not
+overwrite each other.
+
 ### Prerequisites
 
 - Python ≥ 3.11
-- [Agama](https://github.com/GalacticDynamics-Oxford/Agama) (galaxy dynamics library)
+- [Agama](https://github.com/GalacticDynamics-Oxford/Agama) (optional; only for differential compatibility tests)
 - [pynbody](https://pynbody.github.io/) (N-body/SPH snapshot analysis)
 - [IllustrisTNG](https://www.tng-project.org/) simulation data access
 
-### Install with uv
+### Install
 
-```bash
-uv pip install -e .
-```
+The in-tree native potential backend automatically builds and statically links its pinned GSL 2.8 dependency; users do not need to install GSL. A C/C++ compiler, `make`, and internet access on the first build are required. Python dependencies are locked in `uv.lock`. Follow the [native backend build instructions](src/kinematic_decompose/potential/native/README.md), then run `uv sync --locked`.
 
-On macOS with Agama installed via Homebrew, you may need:
+Agama is not needed for normal installation or pipeline use. To run the optional differential compatibility tests, install the extra with `uv sync --locked --extra agama-compat`.
+
+Only when running optional Agama compatibility tests on macOS with a Homebrew Agama installation, you may need:
 
 ```bash
 export DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib
@@ -142,7 +148,7 @@ snapshot.GC_physical_units()
 snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
 snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50])
 
-# 2. Construct gravitational potential (Agama Multipole)
+# 2. Construct gravitational potential (in-tree Agama-compatible Multipole)
 pot = construct_galaxy_potential_model(galaxy)
 
 # 3. Compute kinematic parameters (φ, j_c, e/|e|_max, j_z/j_c, j_p/j_c)
@@ -203,7 +209,7 @@ The custom `GaussianMixture` in `mixture/_gaussian_mixture.py` extends scikit-le
 
 | Package | Minimum Version | Purpose |
 |---------|----------------|---------|
-| `agama` | ≥ 1.0.0 | Gravitational potential (Multipole expansion) |
+| `agama` | optional `agama-compat` extra | Reference implementation for differential compatibility tests; not required at runtime |
 | `numpy` | ≥ 2.4.0 | Numerical computing |
 | `scipy` | ≥ 1.17.0 | Statistics, interpolation, optimisation |
 | `scikit-learn` | ≥ 1.8.0 | GMM base implementation |
@@ -281,4 +287,4 @@ If you use this code in your research, please cite the relevant papers:
 
 ## License
 
-This project is licensed under the BSD-3-Clause License — see the source headers for details. The GMM implementation in `mixture/_gaussian_mixture.py` and `mixture/_base.py` derives from scikit-learn (BSD-3-Clause).
+The distributable package, including the native potential extension statically linked with GSL 2.8, is licensed under GPL-3.0-or-later. As in Agama, this does not relicense the original Agama source fragments: their accompanying notice retains their BSD/MIT terms. The GMM implementation in `mixture/_gaussian_mixture.py` and `mixture/_base.py` derives from scikit-learn (BSD-3-Clause); retain all component notices when redistributing.

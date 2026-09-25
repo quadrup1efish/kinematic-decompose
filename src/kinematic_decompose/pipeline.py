@@ -1,8 +1,8 @@
-import agama
 import pickle
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
+from .potential import Potential
 from .mixture import AutoGaussianMixtureModel, util, preprocessing
 from .PyTNG.snapshot_loader import Snapshot
 from .gravity.kinematic_solver import construct_galaxy_potential_model, calculate_kinematic_param
@@ -75,7 +75,7 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
             galaxy = snapshot.container
             pot = construct_galaxy_potential_model(galaxy)
             pot.export(filename) 
-        pot = agama.Potential(filename)
+        pot = Potential(filename)
 
     snapshot = Snapshot(basePath, snapNum)
     load_particle_fields = {"star": ['Coordinates', 'Velocities', 'Masses', 'ParticleIDs', 'GFM_StellarFormationTime'],
