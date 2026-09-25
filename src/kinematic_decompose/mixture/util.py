@@ -201,6 +201,285 @@ def get_Ecut(eb, masses, nbins = 25,M_bin=400,m_bin=80,toll=1.5,shrink=2,Mmin = 
     
     return Ecut
 
+
+# ---------------------------------------------------------------------------
+# Two-component skew-t ecut
+# ---------------------------------------------------------------------------
+# This method belongs beside get_Ecut because it is an alternative ecut
+# estimator, not a separate mixture-model public API.
+SMOOTH_FACTOR = 2.0
+_GAMMA_LUT = None
+
+
+def _t_pdf_c(nu):
+    """Return the Student-t normalisation constant for ``nu``."""
+    global _GAMMA_LUT
+    if _GAMMA_LUT is None:
+        from scipy.special import gamma
+
+        nus = np.arange(2.0, 50.01, 0.01)
+        _GAMMA_LUT = (
+            nus,
+            np.array([
+                gamma(0.5 * (value + 1.0))
+                / (np.sqrt(value * np.pi) * gamma(0.5 * value))
+                for value in nus
+            ]),
+        )
+    nus, constants = _GAMMA_LUT
+    return float(np.interp(float(np.clip(nu, 2.0, 50.0)), nus, constants))
+
+
+def _skew_t_pdf(x, m, s, a, nu):
+    """Evaluate the Azzalini skew-t density."""
+    z = (x - m) / s
+    c = _t_pdf_c(nu)
+    t_pdf = c * (1.0 + z * z / nu) ** (-0.5 * (nu + 1.0))
+    argument = a * z * np.sqrt((nu + 1.0) / (nu + z * z))
+    from scipy.stats import t as student_t
+
+    return 2.0 * t_pdf * student_t.cdf(argument, nu + 1.0) / s
+
+
+def _skew_t_mode(m, s, a, nu):
+    """Numerically estimate the mode of one skew-t component."""
+    lower, upper = m - 4.0 * s, m + 4.0 * s
+    grid = np.linspace(lower, upper, 2001)
+    density = _skew_t_pdf(grid, m, s, a, nu)
+    index = int(np.argmax(density))
+    if 0 < index < len(grid) - 1:
+        x0, x1, x2 = grid[index - 1:index + 2]
+        y0, y1, y2 = density[index - 1:index + 2]
+        numerator = (
+            x2 * x2 * (y0 - y1)
+            + x1 * x1 * (y2 - y0)
+            + x0 * x0 * (y1 - y2)
+        )
+        denominator = (
+            (x2 - x1) * (y0 - y1)
+            + (x1 - x0) * (y2 - y1)
+        )
+        if abs(denominator) > 1e-30:
+            return float(0.5 * numerator / denominator)
+    return float(grid[index])
+
+
+def _two_skew_t(x, params):
+    """Evaluate a two-component skew-t mixture."""
+    w1, m1, s1, a1, inv_nu1, m2, s2, a2, inv_nu2 = params
+    nu1 = 1.0 / max(inv_nu1, 1e-6)
+    nu2 = 1.0 / max(inv_nu2, 1e-6)
+    return (
+        w1 * _skew_t_pdf(x, m1, s1, a1, nu1)
+        + (1.0 - w1) * _skew_t_pdf(x, m2, s2, a2, nu2)
+    )
+
+
+def _init_skew_t_params(
+    xc, h_sm, m_E, M_E, de, n_sigma=3.0, eb=None, masses=None,
+    seed=0, h0=None,
+):
+    """Initialise the two skew-t components around an ecut valley."""
+    rng = np.random.RandomState(seed)
+    peak_indices = argrelmax(h_sm)[0]
+    peak_indices = peak_indices[h_sm[peak_indices] > 0.05 * h_sm.max()]
+    if eb is not None:
+        try:
+            cut = get_Ecut(eb, masses)
+            if cut is not None and cut != 0.0 and m_E < cut < M_E:
+                left = peak_indices[xc[peak_indices] < cut]
+                right = peak_indices[xc[peak_indices] > cut]
+                if left.size and right.size:
+                    i_left = left[np.argmax(h_sm[left])]
+                    i_right = right[np.argmax(h_sm[right])]
+                    m1, m2 = xc[i_left], xc[i_right]
+                    if m1 < m2 and m2 - m1 > 2 * de:
+                        s_guess = max(de, 0.5 * (m2 - m1))
+                        return [0.5, m1, s_guess, 0.0, m2, s_guess, 0.0]
+        except Exception:
+            pass
+    if len(peak_indices) >= 2:
+        peak_indices = peak_indices[np.argsort(-h_sm[peak_indices])][:2]
+        i_left, i_right = sorted(peak_indices)
+        if xc[i_right] - xc[i_left] > 2 * de:
+            s_guess = max(de, 0.5 * (xc[i_right] - xc[i_left]))
+            return [0.5, xc[i_left], s_guess, 0.0,
+                    xc[i_right], s_guess, 0.0]
+    if h0 is not None:
+        top = np.argsort(h0)[::-1][:2]
+        i_left, i_right = sorted(top)
+        if xc[i_right] - xc[i_left] > 3 * de:
+            s_guess = max(de, 0.5 * (xc[i_right] - xc[i_left]))
+            return [0.5, xc[i_left], s_guess, 0.0,
+                    xc[i_right], s_guess, 0.0]
+    span = M_E - m_E
+    for _ in range(20):
+        m1 = m_E + span * rng.uniform(0.15, 0.45)
+        m2 = m_E + span * rng.uniform(0.55, 0.85)
+        if m2 - m1 > 2 * de:
+            s_guess = max(de, 0.5 * (m2 - m1))
+            return [0.5, m1, s_guess, 0.0, m2, s_guess, 0.0]
+    m_mid = 0.5 * (m_E + M_E)
+    s_guess = max(de, 0.25 * span)
+    return [0.5, m_mid - s_guess, s_guess, 0.0,
+            m_mid + s_guess, s_guess, 0.0]
+
+
+def _skew_t_separation_index(params):
+    """Return the Ashman separation index of fitted skew-t modes."""
+    _, m1, s1, a1, inv_nu1, m2, s2, a2, inv_nu2 = params
+    nu1 = 1.0 / max(inv_nu1, 1e-6)
+    nu2 = 1.0 / max(inv_nu2, 1e-6)
+    mode1 = _skew_t_mode(m1, s1, a1, nu1)
+    mode2 = _skew_t_mode(m2, s2, a2, nu2)
+    return float(separation_index(mode1, mode2, s1, s2))
+
+
+def _order_skew_t_params(params):
+    """Order skew-t components by increasing location."""
+    w1, m1, s1, a1, inv_nu1, m2, s2, a2, inv_nu2 = params
+    if m1 <= m2:
+        return np.array(params, float)
+    return np.array([
+        1.0 - w1, m2, s2, a2, inv_nu2,
+        m1, s1, a1, inv_nu1,
+    ], float)
+
+
+def _fit_skew_t_with_params(
+    eb, masses=None, n_sigma=3.0, lam=10.0, d_min=1.5,
+):
+    """Fit two skew-t components and return ``(params, cut, separation)``."""
+    e = np.asarray(eb, float)
+    finite = np.isfinite(e)
+    e = e[finite]
+    if len(e) < 50:
+        return None, None, None
+    m_E, M_E = e.min(), e.max()
+    q75, q25 = np.percentile(e, [75, 25])
+    iqr = q75 - q25
+    de_fd = 2.0 * iqr * len(e) ** (-1.0 / 3.0)
+    if de_fd <= 0 or not np.isfinite(de_fd):
+        return None, None, None
+    nbins = max(20, min(int(np.ceil((M_E - m_E) / de_fd)), 100))
+    h0, edges = np.histogram(e, bins=nbins)
+    de = edges[1] - edges[0]
+    xc = edges[:-1] + 0.5 * de
+    sig_hat = e.std(ddof=1)
+    bandwidth_scale = min(sig_hat, iqr / 1.34)
+    h_silv = 0.9 * bandwidth_scale * len(e) ** (-1.0 / 5.0)
+    smoothing_bins = max(0.5, SMOOTH_FACTOR * h_silv / de)
+    h_sm = gaussian_filter1d(h0.astype(float), smoothing_bins)
+    h_sm = h_sm / (h_sm.sum() * de)
+    sig = np.sqrt(h0 + 1.0) / (h0.sum() * de)
+    sig = np.clip(sig, 1e-9, None)
+
+    init = _init_skew_t_params(
+        xc, h_sm, m_E, M_E, de, n_sigma=n_sigma, eb=e,
+        masses=masses, h0=h0,
+    )
+    init = np.array(list(init[:4]) + [0.1] + list(init[4:]) + [0.1], float)
+
+    fm_split = None
+    try:
+        m_arr = masses if masses is not None else np.ones(len(e))
+        fitted_cut = get_Ecut(e, m_arr)
+        if fitted_cut is not None and fitted_cut != 0.0 and m_E < fitted_cut < M_E:
+            fm_split = float(fitted_cut)
+    except Exception:
+        pass
+
+    lower = np.array([0.0, m_E, de, -5.0, 0.02,
+                      m_E, de, -5.0, 0.02])
+    upper = np.array([1.0, M_E, 0.5 * (M_E - m_E), 5.0, 0.5,
+                      M_E, 0.5 * (M_E - m_E), 5.0, 0.5])
+    q05 = float(np.quantile(e, 0.05))
+    if fm_split is not None:
+        lower[1], upper[1] = q05, fm_split
+        lower[5], upper[5] = fm_split, np.quantile(e, 0.95)
+    else:
+        m1_init, m2_init = float(init[1]), float(init[5])
+        split = 0.5 * (m1_init + m2_init) if m2_init > m1_init else 0.5 * (m_E + M_E)
+        lower[1], upper[1] = q05, split
+        lower[5], upper[5] = split, np.quantile(e, 0.95)
+
+    med_e = float(np.median(e))
+    std_e = max(de, float(e.std(ddof=1)))
+    p_single = [1.0, med_e, std_e, 0.0, 0.1,
+                med_e, std_e, 0.0, 0.1]
+    chi2_0 = float(np.sum(((h_sm - _two_skew_t(xc, p_single)) / sig) ** 2))
+
+    def objective(params):
+        chi2 = np.sum(((h_sm - _two_skew_t(xc, params)) / sig) ** 2)
+        return chi2 / chi2_0
+
+    from scipy.optimize import minimize
+
+    try:
+        result = minimize(
+            objective, np.clip(init, lower, upper), method="Nelder-Mead",
+            bounds=list(zip(lower, upper)),
+            options={"maxiter": 600, "xatol": 1e-5, "fatol": 1e-5},
+        )
+        params = result.x
+    except Exception:
+        params = init
+    params = _order_skew_t_params(params)
+
+    w1, m1, s1, a1, inv_nu1, m2, s2, a2, inv_nu2 = params
+    nu1 = 1.0 / max(inv_nu1, 1e-6)
+    nu2 = 1.0 / max(inv_nu2, 1e-6)
+    mode1 = _skew_t_mode(m1, s1, a1, nu1)
+    mode2 = _skew_t_mode(m2, s2, a2, nu2)
+    cut = 0.5 * (mode1 + mode2)
+    try:
+        from scipy.optimize import brentq
+
+        def difference(x):
+            return (
+                w1 * _skew_t_pdf(x, m1, s1, a1, nu1)
+                - (1.0 - w1) * _skew_t_pdf(x, m2, s2, a2, nu2)
+            )
+
+        lower_root, upper_root = min(mode1, mode2), max(mode1, mode2)
+        if difference(lower_root) * difference(upper_root) <= 0:
+            cut = float(brentq(difference, lower_root, upper_root))
+    except Exception:
+        pass
+
+    lo_q, hi_q = np.quantile(e, [0.01, 0.99])
+    span = M_E - m_E
+    degenerate = (
+        cut is None or not (lo_q <= cut <= hi_q)
+        or min(s1, s2) < 2.0 * de
+        or max(s1, s2) >= 0.95 * 0.5 * span
+        or min(w1, 1.0 - w1) < 0.05
+        or m1 < m_E + 0.05 * span
+        or m2 > M_E - 0.05 * span
+    )
+    if degenerate:
+        try:
+            m_arr = masses if masses is not None else np.ones(len(e))
+            fallback = get_Ecut(e, m_arr, M_bin=100, m_bin=25, Mmin=0.1)
+            if fallback is not None and fallback != 0.0 and lo_q <= fallback <= hi_q:
+                return params, float(fallback), _skew_t_separation_index(params)
+        except Exception:
+            pass
+        for candidate in (0.5 * (mode1 + mode2), float(np.median(e))):
+            if lo_q <= candidate <= hi_q:
+                cut = float(candidate)
+                break
+    return params, cut, _skew_t_separation_index(params)
+
+
+def get_Ecut_skewt(eb, masses=None, n_sigma=3.0, lam=10.0, d_min=1.5):
+    """Return an ecut estimated from a two-component skew-t fit."""
+    _, cut, _ = _fit_skew_t_with_params(
+        eb, masses=masses, n_sigma=n_sigma, lam=lam, d_min=d_min,
+    )
+    return cut
+
+
 def FindMin(q, m_E, M_E, nbins):
     #Minimum number of particles to perform a reliable Jcirc decomposition
     if len(q)>=1e4:
