@@ -1236,6 +1236,77 @@ void softenedKernelAngularMoments(double radius, double particleRadius, double h
     }
 }
 
+// Particle-major variant of the spherical-harmonic projection, used by the
+// softened-density accumulation.  The harmonics of the particle whose radius
+// ranks j-th are written contiguously at row j, so the pruned radial loop can
+// read one particle's coefficients from a single row instead of gathering one
+// entry per coefficient vector.  Values are identical to
+// computeSphericalHarmonicsFromParticles: same sphHarmArray/trigMultiAngle
+// calls in the same order and the same expression, only the destination layout
+// and offset differ.  ``harmonics`` is [nbody * numActive] and is fully
+// overwritten, so it is deliberately left uninitialised by the caller.
+void computeSphericalHarmonicsParticleMajor(
+    const particles::ParticleArray<coord::PosCyl> &particles,
+    const math::SphHarmIndices &ind,
+    const std::vector<size_t> &rankByParticle,
+    const std::vector<int> &columnOfCoef,
+    size_t numActive,
+    double *harmonics)
+{
+    const ptrdiff_t nbody = particles.size();
+    bool needSine = ind.mmin()<0;
+    std::string errorMsg;
+    utils::CtrlBreakHandler cbrk;  // catch Ctrl-Break keypress
+    bool stop = false;
+#ifdef _OPENMP
+#pragma omp parallel
+#endif
+    {
+        // thread-local temporary arrays for Legendre and trigonometric functions
+        std::vector<double> tmp(ind.lmax+2+2*ind.mmax);
+        double *leg = &tmp[0], *trig = leg + ind.lmax+1;
+        trig[0] = 1.;  // stores cos(0*phi), which is not computed by trigMultiAngle
+#ifdef _OPENMP
+#pragma omp for schedule(static)
+#endif
+        for(ptrdiff_t i=0; i<nbody; i++) {
+            if(stop) continue;
+            if(cbrk.triggered()) stop = true;
+            try{
+                const coord::PosCyl& pos = particles.point(i);
+                double r   = sqrt(pow_2(pos.R) + pow_2(pos.z));
+                double tau = pos.z == 0 ? 0 : pos.z / (r + pos.R);
+                double *row = harmonics + rankByParticle[i] * numActive;
+                math::trigMultiAngle(pos.phi, ind.mmax, needSine, trig+1 /* start from m=1 */);
+                for(int m=0; m<=ind.mmax; m++) {
+                    // A Legendre recursion whose coefficients are all excluded
+                    // by the index scheme writes nothing, so skip it.
+                    bool hasPlus  = ind.lmin(m) <= ind.lmax;
+                    bool hasMinus = needSine && m>0 && ind.lmin(-m) <= ind.lmax;
+                    if(!hasPlus && !hasMinus)
+                        continue;
+                    double mult = 2*M_SQRTPI * (m==0 ? 1 : M_SQRT2);
+                    math::sphHarmArray(ind.lmax, m, tau, leg);
+                    if(hasPlus)
+                        for(int l=ind.lmin(m); l<=ind.lmax; l+=ind.step)
+                            row[columnOfCoef[ind.index(l, m)]] = mult * leg[l-m] * trig[m];
+                    if(hasMinus)
+                        for(int l=ind.lmin(-m); l<=ind.lmax; l+=ind.step)
+                            row[columnOfCoef[ind.index(l, -m)]] = mult * leg[l-m] * trig[ind.mmax+m];
+                }
+            }
+            catch(std::exception& e) {
+                errorMsg = e.what();
+                stop = true;
+            }
+        }
+    }
+    if(cbrk.triggered())
+        throw std::runtime_error(cbrk.message());
+    if(!errorMsg.empty())
+        throw std::runtime_error("computeSphericalHarmonicsParticleMajor: " + errorMsg);
+}
+
 void computeSoftenedDensityCoefs(
     const particles::ParticleArray<coord::PosCyl>& particles,
     const std::vector<double>& softening, const math::SphHarmIndices& ind,
@@ -1245,26 +1316,101 @@ void computeSoftenedDensityCoefs(
     if(softening.size()!=1 && softening.size()!=particles.size())
         throw std::invalid_argument("Softening must contain one value or one value per particle");
     coefs.assign(ind.size(), std::vector<double>(gridRadii.size(), 0.));
-    std::vector<double> particleRadii;
-    std::vector< std::vector<double> > harmonics;
-    computeSphericalHarmonicsFromParticles(particles, ind, particleRadii, harmonics);
+    const size_t nbody = particles.size();
+    // Particle radii, softening validation and the maximum support come first:
+    // the radius ranks (the row addresses below) and the pruning window both
+    // need them.
+    std::vector<double> particleRadii(nbody);
+    double maxSoftening = 0;
+    for(size_t i=0; i<nbody; i++) {
+        double h = softening[softening.size()==1 ? 0 : i];
+        if(!(h>0) || !std::isfinite(h))
+            throw std::invalid_argument("Softening lengths must be finite and positive");
+        maxSoftening = std::max(maxSoftening, h);
+        const coord::PosCyl& pos = particles.point(i);
+        double r = sqrt(pow_2(pos.R) + pow_2(pos.z));
+        if(!std::isfinite(r))
+            throw std::invalid_argument("Particle radii must be finite for softened Multipole construction");
+        particleRadii[i] = r;
+    }
+    // The requested symmetry may exclude (l,m) pairs, so enumerate the stored
+    // coefficients explicitly and keep a coefficient -> column map for the
+    // particle-major projection.
+    std::vector<unsigned int> activeCoefficients;
+    std::vector<int> coefficientDegrees;
+    std::vector<int> columnOfCoef(ind.size(), -1);
+    for(unsigned int c=0; c<ind.size(); c++) {
+        int l = ind.index_l(c), m = ind.index_m(c);
+        if(l < ind.lmin(m) || l > ind.lmax || (l - ind.lmin(m)) % ind.step != 0)
+            continue;
+        columnOfCoef[c] = (int)activeCoefficients.size();
+        activeCoefficients.push_back(c);
+        coefficientDegrees.push_back(l);
+    }
+    if(activeCoefficients.empty())
+        return;
+    const size_t numActiveCoefficients = activeCoefficients.size();
+    // Sort particle radii once.  At a given integration radius, a compact
+    // kernel can contribute only if |r-r_i| <= h_i <= maxSoftening.  The
+    // interval lookup skips particles whose kernels cannot intersect the
+    // spherical shell, while the per-particle check below handles varying h.
+    std::vector<size_t> particleOrder(nbody);
+    for(size_t i=0; i<nbody; i++)
+        particleOrder[i] = i;
+    std::sort(particleOrder.begin(), particleOrder.end(),
+        [&particleRadii](size_t i, size_t j) { return particleRadii[i] < particleRadii[j]; });
+    std::vector<size_t> rankByParticle(nbody);
+    std::vector<double> sortedParticleRadii(nbody);
+    std::vector<double> sortedMasses(nbody);
+    std::vector<double> sortedSoftening(nbody);
+    for(size_t j=0; j<nbody; j++) {
+        const size_t i = particleOrder[j];
+        rankByParticle[i] = j;
+        sortedParticleRadii[j] = particleRadii[i];
+        sortedMasses[j] = particles.mass(i);
+        sortedSoftening[j] = softening[softening.size()==1 ? 0 : i];
+    }
+    // Uninitialised on purpose: the projection writes every stored coefficient
+    // exactly once, so zero-filling the nbody x nactive array would only spend
+    // memory bandwidth.
+    std::unique_ptr<double[]> particleHarmonics(new double[nbody * numActiveCoefficients]);
+    computeSphericalHarmonicsParticleMajor(particles, ind, rankByParticle,
+        columnOfCoef, numActiveCoefficients, particleHarmonics.get());
+
     std::vector<double> moments(ind.lmax+1);
+    std::vector<double> radialCoefficients(numActiveCoefficients);
+    std::vector<double> densityCoefsByRadius(gridRadii.size()*numActiveCoefficients);
     for(size_t k=0; k<gridRadii.size(); k++) {
-        for(size_t i=0; i<particles.size(); i++) {
-            double h = softening[softening.size()==1 ? 0 : i];
-            if(!(h>0) || !std::isfinite(h))
-                throw std::invalid_argument("Softening lengths must be finite and positive");
-            softenedKernelAngularMoments(gridRadii[k], particleRadii[i], h, ind.lmax, moments);
-            // SphHarmIndices compresses the coefficient set according to
-            // the requested symmetry; skipped (l,m) entries have empty
-            // harmonic arrays and are identically zero.
-            for(unsigned int c=0; c<ind.size(); c++) {
-                if(harmonics[c].size() != particles.size())
-                    continue;
-                int l = ind.index_l(c);
-                coefs[c][k] += particles.mass(i) * harmonics[c][i] * moments[l];
-            }
+        double radius = gridRadii[k];
+        std::vector<double>::iterator first = std::lower_bound(
+            sortedParticleRadii.begin(), sortedParticleRadii.end(), radius-maxSoftening);
+        std::vector<double>::const_iterator last = std::upper_bound(
+            first, sortedParticleRadii.end(), radius+maxSoftening);
+        std::fill(radialCoefficients.begin(), radialCoefficients.end(), 0.);
+        for(std::vector<double>::const_iterator particle=first;
+            particle!=last; ++particle) {
+            const size_t j = particle-sortedParticleRadii.begin();
+            const double h = sortedSoftening[j];
+            if(std::abs(radius-sortedParticleRadii[j]) > h)
+                continue;
+            softenedKernelAngularMoments(radius, sortedParticleRadii[j], h, ind.lmax, moments);
+            const double weightedMass = sortedMasses[j];
+            const double* particleHarmonicsRow = particleHarmonics.get() + j*numActiveCoefficients;
+            // Both the particle's harmonics and this radial node's coefficient
+            // accumulators are contiguous in the innermost coefficient loop.
+            for(size_t c=0; c<numActiveCoefficients; c++)
+                radialCoefficients[c] += weightedMass * particleHarmonicsRow[c] *
+                    moments[coefficientDegrees[c]];
         }
+        std::copy(radialCoefficients.begin(), radialCoefficients.end(),
+            densityCoefsByRadius.begin()+k*numActiveCoefficients);
+    }
+    // The downstream density/Poisson code expects coefficient-major vectors.
+    // Do this small transpose once, with contiguous writes to each output row.
+    for(size_t c=0; c<numActiveCoefficients; c++) {
+        std::vector<double>& coefficient = coefs[activeCoefficients[c]];
+        for(size_t k=0; k<gridRadii.size(); k++)
+            coefficient[k] = densityCoefsByRadius[k*numActiveCoefficients+c];
     }
 }
 
