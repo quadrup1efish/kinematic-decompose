@@ -525,36 +525,61 @@ void chooseGridRadii(const particles::ParticleArray<coord::PosCyl>& particles,
 /// Auto-select grid limits for a softened particle source.  Unlike the point
 /// particle path, an exact particle at the origin is allowed and is ignored
 /// only when estimating the logarithmic grid limits.
+///
+/// Whether or not the limits were supplied, they are then widened just enough
+/// to contain the support of every kernel.  The density is sampled only inside
+/// [rmin, rmax] and extrapolated outside it, so a kernel reaching past either
+/// end loses part of its mass to that extrapolation: in a sparse source (few
+/// particles, small h) the auto limits land on the particles themselves and a
+/// narrow kernel used to come out with roughly half of its potential.  A kernel
+/// that reaches the origin cannot be covered by a logarithmic grid, so there
+/// the inner limit stays at 0.1*h and the innermost tenth of such a kernel is
+/// still extrapolated, as before.  The clamp only ever widens the grid.
 void chooseGridRadiiSoftened(const particles::ParticleArray<coord::PosCyl>& particles,
     const std::vector<double>& softening, unsigned int gridSizeR,
     double& rmin, double& rmax)
 {
-    if(rmin!=0 && rmax!=0)
-        return;
-    const bool autoRmin = rmin==0;
-    double hmax = 0;
-    for(size_t i=0; i<softening.size(); i++) {
-        if(!(softening[i]>0) || !std::isfinite(softening[i]))
+    if(softening.size()!=1 && softening.size()!=particles.size())
+        throw std::invalid_argument("Softening must contain one value or one value per particle");
+    double hmax = 0, innerEdge = INFINITY, outerEdge = 0;
+    for(size_t i=0; i<particles.size(); i++) {
+        const double h = softening[softening.size()==1 ? 0 : i];
+        if(!(h>0) || !std::isfinite(h))
             throw std::invalid_argument("Softening lengths must be finite and positive");
-        hmax = std::max(hmax, softening[i]);
+        hmax = std::max(hmax, h);
+        if(particles.mass(i)==0)
+            continue;
+        const coord::PosCyl& point = particles.point(i);
+        const double r = sqrt(pow_2(point.R) + pow_2(point.z));
+        if(!std::isfinite(r))
+            throw std::invalid_argument(
+                "Particle radii must be finite for softened Multipole construction");
+        innerEdge = std::min(innerEdge, std::max(0.1*h, r - h));
+        outerEdge = std::max(outerEdge, r + h);
+    }
+    if(rmin!=0 && rmax!=0) {
+        rmin = std::min(rmin, innerEdge);
+        rmax = std::max(rmax, outerEdge);
+        return;
     }
     std::vector<double> radii;
-    double prmin=INFINITY, prmax=0, originScale=INFINITY;
+    double prmin=INFINITY, prmax=0;
     for(size_t i=0; i<particles.size(); i++) {
         if(particles.mass(i)==0)
             continue;
-        double r = sqrt(pow_2(particles.point(i).R) + pow_2(particles.point(i).z));
+        const coord::PosCyl& point = particles.point(i);
+        double r = sqrt(pow_2(point.R) + pow_2(point.z));
         if(r>0) {
             radii.push_back(r);
             prmin = std::min(prmin, r);
             prmax = std::max(prmax, r);
         }
-        if(r < softening[i])
-            originScale = std::min(originScale, 0.1 * softening[i]);
     }
     if(radii.empty()) {
         if(rmin==0) rmin = hmax * 1.e-3;
         if(rmax==0) rmax = hmax * 100;
+        rmin = std::min(rmin, innerEdge);
+        rmax = std::max(rmax, outerEdge);
         return;
     }
     size_t nbody = radii.size();
@@ -566,14 +591,14 @@ void chooseGridRadiiSoftened(const particles::ParticleArray<coord::PosCyl>& part
         std::nth_element(radii.begin(), radii.begin() + nskip, radii.end());
         rmin = std::max(radii[nskip], rhalf * std::pow(spacing, -0.5*gridSizeR));
     }
-    if(autoRmin && std::isfinite(originScale))
-        rmin = std::min(rmin, originScale);
     if(rmax==0) {
         std::nth_element(radii.begin(), radii.end() - nskip - 1, radii.end());
         rmax = std::min(radii[nbody-nskip-1], rhalf * std::pow(spacing, 0.5*gridSizeR));
     }
     if(!(rmax>rmin))
         rmax = std::max(prmax, rmin * spacing);
+    rmin = std::min(rmin, innerEdge);
+    rmax = std::max(rmax, outerEdge);
     FILTERMSG(utils::VL_DEBUG, "Multipole",
         "Softened grid in r=["+utils::toString(rmin)+":"+utils::toString(rmax)+"]"
         ", non-central particles span r=["+utils::toString(prmin)+":"+utils::toString(prmax)+"]");
