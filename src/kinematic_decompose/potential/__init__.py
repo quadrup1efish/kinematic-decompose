@@ -20,6 +20,23 @@ def getUnits():
     return _potential.getUnits()
 
 
+def set_num_threads(num_threads: int = 1) -> None:
+    """Set the number of threads used to evaluate a potential on many points.
+
+    Points are evaluated independently, so ``Potential.potential``/``.force``
+    return identical values for any thread count -- only wall time changes.
+    The default is 1 (single-threaded); arrays shorter than 4096 points always
+    stay on one thread. Construction of a potential is always single-threaded,
+    so a built potential is reproducible bit for bit.
+    """
+    _potential.set_num_threads(int(num_threads))
+
+
+def get_num_threads() -> int:
+    """Return the thread count currently used for array evaluation."""
+    return _potential.num_threads()
+
+
 class Potential:
     """Agama-compatible subset: Multipole, additive Composite and INI I/O."""
 
@@ -62,4 +79,7 @@ class Potential:
         self._native.export(str(filename))
 
 
-__all__ = ["Potential", "setUnits", "getUnits", "G"]
+__all__ = [
+    "Potential", "setUnits", "getUnits", "G",
+    "set_num_threads", "get_num_threads",
+]

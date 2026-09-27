@@ -6,16 +6,21 @@
 #include "potential_multipole.h"
 #include "units.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cctype>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace py = pybind11;
@@ -44,6 +49,69 @@ bool isSupportedPotential(const potential::BasePotential& potential)
 const units::InternalUnits internalUnits(2.7183 * units::Kpc, 3.1416 * units::Myr);
 double lengthUnit = 1., velocityUnit = 1., massUnit = 1., timeUnit = 1.;
 bool potentialCreated = false;
+
+/// Number of threads used to evaluate a potential over an array of points.
+/// 1 (default) is bit-identical to the serial loop, since every point is
+/// evaluated independently. Only the per-point loops of evaluate() use this
+/// value and threads are created with std::thread (no OpenMP runtime is
+/// involved: mixing the several libomp copies that other packages in the
+/// process pull in crashes the OpenMP thread pool on macOS). Potentials are
+/// always constructed single-threaded, so a built potential is reproducible
+/// bit for bit.
+std::atomic<int> evalThreads(1);
+
+/// Smallest array length worth splitting across threads: below this the thread
+/// launch overhead dominates, so the evaluation stays serial.
+const size_t MIN_POINTS_PER_THREAD = 4096;
+
+/// Run body(i) for i in [0, n) on up to numThreads threads. Each point is
+/// independent; exceptions are rethrown on the calling thread after joining.
+template<typename Body>
+void forEachPoint(const size_t n, const int numThreads, Body body)
+{
+    const size_t nThreads = numThreads <= 1 ? 1 :
+        std::min(static_cast<size_t>(numThreads), n / MIN_POINTS_PER_THREAD);
+    if(nThreads <= 1) {
+        for(size_t i=0; i<n; ++i)
+            body(i);
+        return;
+    }
+
+    const size_t chunk = (n + nThreads - 1) / nThreads;
+    std::vector<std::thread> workers;
+    workers.reserve(nThreads - 1);
+    std::mutex errorMutex;
+    std::exception_ptr error;
+    auto run = [&](size_t lo, size_t hi) {
+        for(size_t i=lo; i<hi; ++i) {
+            try {
+                body(i);
+            } catch(...) {
+                std::lock_guard<std::mutex> lock(errorMutex);
+                if(!error)
+                    error = std::current_exception();
+            }
+        }
+    };
+    auto join = [&]() {
+        for(std::thread& worker: workers)
+            if(worker.joinable()) worker.join();
+    };
+    try {
+        for(size_t t=1; t<nThreads; ++t) {
+            const size_t lo = t*chunk, hi = std::min(n, lo + chunk);
+            if(lo >= hi) break;
+            workers.emplace_back([&, lo, hi]() { run(lo, hi); });
+        }
+    } catch(...) {
+        join();
+        throw;
+    }
+    run(0, std::min(n, chunk));
+    join();
+    if(error)
+        std::rethrow_exception(error);
+}
 
 units::ExternalUnits externalUnits()
 {
@@ -309,23 +377,26 @@ py::array_t<double> evaluate(const PtrPotential& pot,
         throw std::invalid_argument("coordinates must have shape (N,3)");
     const size_t n=static_cast<size_t>(p.shape[0]);
     const double* xyz=static_cast<const double*>(p.ptr);
+    const double scale=lengthUnit/(velocityUnit*velocityUnit);
+    const double velScale=velocityUnit*velocityUnit;
+    const int numThreads = evalThreads.load();
     if(wantForce) {
         py::array_t<double> out({n, size_t(3)});
         double* result=out.mutable_data();
-        for(size_t i=0; i<n; ++i) {
+        forEachPoint(n, numThreads, [&](size_t i) {
             coord::GradCar grad;
             pot->eval(coord::PosCar(xyz[3*i]*lengthUnit,xyz[3*i+1]*lengthUnit,
                 xyz[3*i+2]*lengthUnit), nullptr, &grad);
-            const double scale=lengthUnit/(velocityUnit*velocityUnit);
             result[3*i]=-grad.dx*scale; result[3*i+1]=-grad.dy*scale; result[3*i+2]=-grad.dz*scale;
-        }
+        });
         return out;
     }
     py::array_t<double> out(n);
     double* result=out.mutable_data();
-    for(size_t i=0; i<n; ++i)
+    forEachPoint(n, numThreads, [&](size_t i) {
         result[i]=pot->value(coord::PosCar(xyz[3*i]*lengthUnit,xyz[3*i+1]*lengthUnit,
-            xyz[3*i+2]*lengthUnit))/(velocityUnit*velocityUnit);
+            xyz[3*i+2]*lengthUnit))/velScale;
+    });
     return out;
 }
 
@@ -334,6 +405,18 @@ py::array_t<double> evaluate(const PtrPotential& pot,
 PYBIND11_MODULE(_potential, m)
 {
     m.doc() = "Narrow Agama-compatible native Multipole and Composite backend";
+    m.def("set_num_threads", [](int numThreads) {
+        evalThreads.store(std::max(1, numThreads));
+    }, py::arg("num_threads")=1,
+        "Set the number of threads used to evaluate a Potential on an array of\n"
+        "points (1 = single-threaded, the default). Points are evaluated\n"
+        "independently, so returned values are identical for any thread count;\n"
+        "only wall time changes. Arrays shorter than 4096 points always stay on\n"
+        "one thread. Construction is always single-threaded, so a built\n"
+        "potential is reproducible bit for bit.");
+    m.def("num_threads", []() {
+        return evalThreads.load();
+    }, "Return the thread count used for array evaluation.");
     m.def("setUnits", [](double mass, double length, double velocity, double time) {
         const double oldLength=lengthUnit, oldVelocity=velocityUnit;
         const double oldMass=massUnit, oldTime=timeUnit;
