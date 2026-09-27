@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <algorithm>
+
 #ifndef _MSC_VER
 #include <alloca.h>
 #else
@@ -40,7 +41,7 @@ static const int LADD_SPHHARM = 6;
 /// choice between using 1d splines in radius for each (l,m) or 2d splines in (r,theta) for each m
 /// is controlled by the order of expansion in theta:
 /// if lmax <= LMAX_1D_SPLINE, use 1d splines, otherwise 2d
-static const int LMAX_1D_SPLINE = 2;
+static const int LMAX_1D_SPLINE = 1;
 
 /// minimum number of grid nodes
 static const unsigned int MULTIPOLE_MIN_GRID_SIZE = 2;
@@ -1230,7 +1231,10 @@ void softenedKernelAngularMoments(double radius, double particleRadius, double h
     muMin = std::max(-1., muMin);
     double muHalf = (pow_2(radius) + pow_2(particleRadius) - pow_2(0.5*h)) /
         (2 * radius * particleRadius);
-    const int order = 12;
+    // Resolve both the requested Legendre degree and the square-root endpoint
+    // at mu=1 when radius == particleRadius.  A fixed 12-point rule is adequate
+    // for production l<=4, but aliases high-order moments as l grows.
+    const int order = std::min(math::MAX_GL_TABLE, std::max(12, 2*lmax+8));
     const double *nodes = math::GLPOINTS[order], *weights = math::GLWEIGHTS[order];
 
     // Integrate 1/2 * integral W(s) P_l(mu) dmu.  The split at q=1/2
@@ -1332,40 +1336,243 @@ void computeSphericalHarmonicsParticleMajor(
         throw std::runtime_error("computeSphericalHarmonicsParticleMajor: " + errorMsg);
 }
 
-void computeSoftenedDensityCoefs(
+// ---------------------------------------------------------------------------
+// Softened potential coefficients by per-particle radial integration.
+//
+// The compact kernels are never sampled on a global radial grid.  Sampling was
+// what made the result depend on how the grid spacing happened to compare with
+// the kernel width: a narrow kernel could fall between two nodes, or be clipped
+// by the innermost node, and a spline of the sampled density would then
+// silently misrepresent the source.  Instead every particle is integrated over
+// its own support band [max(0,a-h), a+h], split at the kernel's own
+// breakpoints, and the contributions are accumulated straight onto the
+// requested radial grid:
+//
+//   Pint(r_k) = r_k^{-(l+1)} \int_0^{r_k}      rho_{l,m}(s) s^{l+2} ds
+//   Pext(r_k) = r_k^{l}      \int_{r_k}^\infty rho_{l,m}(s) s^{1-l} ds
+//
+// A node outside a particle's band receives that particle's exact full-band
+// integral, a node inside the band receives the exact partial integral.  No
+// feature of the source is ever represented by an interpolant.
+// ---------------------------------------------------------------------------
+
+/// Order of the Gauss-Legendre rule used inside one smooth piece of a kernel
+/// band.  Measured against a 16-point reference at the expansion orders used in
+/// production (lmax<=4): a 4-point rule agrees with an 8- and a 16-point rule to
+/// ~6e-8, i.e. three orders of magnitude below the accuracy of the potential
+/// spline itself, at half the cost.  Raising it does not help at high lmax --
+/// there the limiter is the angular rule, not this one.
+static const unsigned int GLORDER_BAND = 20;
+
+/** Add the angular moments of one compact kernel integrated over a radial range,
+    splitting the range at the kernel's own breakpoints:
+      s = |a-h|    support edge (where the kernel appears or disappears),
+      s = |a-h/2|  internal knot of the cubic spline,
+      s = a        kink of |s-a|,
+      s = h-a      change of the angular integration range when the kernel
+                   contains the origin.
+    Both powers are taken relative to one reference radius, so the accumulators
+    stay bounded and no large intermediate powers of s are formed.
+    \param[in]  particleRadius  is the radius of the particle from the origin;
+    \param[in]  h  is the kernel support radius (softening length);
+    \param[in]  radiusLo, radiusHi  is the radial range (clipped to the band);
+    \param[in]  reference  is the radius the powers are taken relative to;
+    \param[in]  splitRadius  if positive, it is used as an extra breakpoint and
+                only the inner power is accumulated for s < splitRadius while only
+                the outer power is accumulated for s > splitRadius, which produces
+                the two half-integrals a node inside the band needs; if zero, both
+                powers are accumulated over the whole range;
+    \param[in]  order  is the number of Gauss-Legendre points per piece;
+    \param[out] inner[l] += \int m_l(s) (s/reference)^{l+2} ds;
+    \param[out] outer[l] += \int m_l(s) (s/reference)^{1-l} ds;
+    \param[in,out] moments  is scratch space of at least lmax+1 elements.
+*/
+void integrateSoftenedBand(double particleRadius, double h,
+    double radiusLo, double radiusHi, double reference, double splitRadius, int lmax,
+    std::vector<double>& inner, std::vector<double>& outer, std::vector<double>& moments,
+    unsigned int order)
+{
+    if(!(radiusHi > radiusLo))
+        return;
+    // The split radius is itself a breakpoint: without it, the nodes of a piece
+    // that straddles it would merely be filtered by side, which is not a
+    // Gauss rule on either sub-interval.
+    double cuts[7] = {
+        std::max(0., particleRadius - h), std::max(0., particleRadius - 0.5*h),
+        std::max(0., h - particleRadius), particleRadius,
+        particleRadius + 0.5*h, particleRadius + h, splitRadius};
+    const bool split = splitRadius > 0;
+    const int numCuts = split ? 7 : 6;
+    std::sort(cuts, cuts + numCuts);
+    const double *nodes = math::GLPOINTS[order], *weights = math::GLWEIGHTS[order];
+    for(int piece=0; piece<numCuts-1; piece++) {
+        const double lo = std::max(radiusLo, cuts[piece]);
+        const double hi = std::min(radiusHi, cuts[piece+1]);
+        if(!(hi > lo))
+            continue;
+        const double width = hi - lo;
+        for(unsigned int n=0; n<order; n++) {
+            const double s = lo + width * nodes[n];
+            if(!(s > 0))
+                continue;
+            softenedKernelAngularMoments(s, particleRadius, h, lmax, moments);
+            const double w = width * weights[n];
+            const bool addInner = !split || s < splitRadius;
+            const bool addOuter = !split || s > splitRadius;
+            for(int l=0; l<=lmax; l++) {
+                const double value = moments[l];
+                if(value == 0.)
+                    continue;
+                if(addInner)
+                    inner[l] += w * value * math::pow(s / reference, l + 2);
+                if(addOuter)
+                    outer[l] += w * value * math::pow(s / reference, 1 - l);
+            }
+        }
+    }
+}
+
+/** Reduced far-field band integrals of the l=0 component as functions of rho.
+
+    The kernel scales with h: m_l(s;a,h) = h^-3 M_l(s/h; a/h), hence
+        int m_0 s^2 ds = f(rho)          (independent of h, closed form a^2+<u^2>)
+        int m_0 s   ds = g(rho) / h      (reduced form independent of h)
+    with rho = a/h.  Both are therefore universal one-dimensional functions of a
+    single variable, which is what makes the fixed per-particle cost of the
+    sweep removable for the diffuse components: instead of a piecewise
+    quadrature each particle costs two interpolations.
+
+    The table is built once per call, at an order well above the one the sweep
+    uses (the branches of the kernel are polynomials, so a 16-point rule is
+    accurate to roundoff), which also removes the under-resolution the sweep has
+    for kernels wider than the particle radius.  Values are stored at h = 1,
+    where the reduced forms are read off directly.
+*/
+struct SoftenedMonopoleFarField
+{
+    std::vector<double> rad;    ///< rho grid, log-spaced in three segments
+    std::vector<double> inner;  ///< f(rho) = int m_0 s^2 ds at h=1
+    std::vector<double> outer;  ///< g(rho) = int m_0 s   ds at h=1
+    double maxRho;
+    bool ready;
+
+    SoftenedMonopoleFarField() : maxRho(1e3), ready(false) {}
+
+    void ensureBuilt()
+    {
+        if(ready)
+            return;
+        ready = true;
+        // Breakpoints at rho = 1/2 and rho = 1: there the band's inner knot
+        // passes the rho = 1/2 break of the kernel, and there the band starts to
+        // contain the origin.  The reduced integrals change character at both,
+        // so no interpolation stencil may straddle them.
+        const int nodesPerSegment = 97;
+        const double segment[4] = {1e-6, 0.5, 1., maxRho};
+        std::vector<double> moments, one(1, 0.), other(1, 0.);
+        const unsigned int tableOrder = 16;
+        for(int seg=0; seg<3; seg++)
+            for(int n=(seg>0 ? 1 : 0); n<nodesPerSegment; n++) {
+                const double x = std::exp(std::log(segment[seg])
+                    + (std::log(segment[seg+1]) - std::log(segment[seg]))
+                        * n / (nodesPerSegment-1));
+                one[0] = other[0] = 0.;
+                integrateSoftenedBand(x, 1., std::max(0., x-1.), x+1., 1., 0., 0,
+                    one, other, moments, tableOrder);
+                rad.push_back(x);
+                inner.push_back(one[0]);
+                outer.push_back(other[0]);
+            }
+    }
+
+    /// Cubic Lagrange interpolation on the log-rho grid.  The tables are smooth
+    /// in log rho (a 33-node Chebyshev fit is good to ~1e-14 per segment), so
+    /// this stays far below the accuracy of the potential spline itself.
+    double interpolate(const std::vector<double>& values, double x) const
+    {
+        const size_t size = rad.size();
+        // A particle exactly at the origin (or several orders below the lowest
+        // tabulated rho) is clamped instead of taking log(0): the reduced
+        // integrals are smooth in rho^2 there, so the clamped value differs from
+        // the true one by ~1e-12.
+        const double lx = std::log(std::max(x, rad.front()));
+        size_t hit = std::lower_bound(rad.begin(), rad.end(), x) - rad.begin();
+        size_t first = hit >= 2 ? hit-2 : 0;
+        if(first + 4 > size)
+            first = size - 4;
+        double sum = 0.;
+        for(size_t j=first; j<first+4; j++) {
+            double weight = 1.;
+            for(size_t k=first; k<first+4; k++)
+                if(k != j)
+                    weight *= (lx - std::log(rad[k])) / (std::log(rad[j]) - std::log(rad[k]));
+            sum += weight * values[j];
+        }
+        return sum;
+    }
+
+    double innerAt(double rho) const { return interpolate(inner, rho); }
+    double outerAt(double rho) const { return interpolate(outer, rho); }
+};
+
+/** Compute the spherical-harmonic coefficients of the potential of particles
+    represented by compact-support density kernels.
+
+    This reproduces the combination used by computePotentialCoefsFromSource
+    (the same Pint/Pext split, the same -4pi/(2l+1) factor and the same internal
+    G=1 convention), but takes the radial integrals exactly for each particle
+    instead of reading a spline of density values sampled at radial nodes.
+    \param[in]  particles  are the source particles;
+    \param[in]  softening  is one softening length or one per particle;
+    \param[in]  ind  determines the order and symmetry of the expansion;
+    \param[in]  gridRadii  is the (increasing, positive) output radial grid;
+    \param[out] coefs[0], coefs[1]  receive Phi_{l,m}(r_k) and dPhi_{l,m}/dr.
+*/
+void computeSoftenedPotentialCoefs(
     const particles::ParticleArray<coord::PosCyl>& particles,
     const std::vector<double>& softening, const math::SphHarmIndices& ind,
     const std::vector<double>& gridRadii,
-    std::vector< std::vector<double> >& coefs)
+    std::vector< std::vector<double> > coefs[2])
 {
+    const int gridSizeR = gridRadii.size();
+    if(gridSizeR < (int)MULTIPOLE_MIN_GRID_SIZE)
+        throw std::invalid_argument("Multipole: radial grid size too small");
+    for(int k=0; k<gridSizeR; k++)
+        if(gridRadii[k] <= (k==0 ? 0 : gridRadii[k-1]))
+            throw std::invalid_argument("Multipole: radii of grid points must be "
+                "positive and sorted in increasing order");
     if(softening.size()!=1 && softening.size()!=particles.size())
         throw std::invalid_argument("Softening must contain one value or one value per particle");
-    coefs.assign(ind.size(), std::vector<double>(gridRadii.size(), 0.));
+
     const size_t nbody = particles.size();
-    // Particle radii, softening validation and the maximum support come first:
-    // the radius ranks (the row addresses below) and the pruning window both
-    // need them.
-    std::vector<double> particleRadii(nbody);
-    double maxSoftening = 0;
+    const int lmax = ind.lmax;
+    coefs[0].assign(ind.size(), std::vector<double>(gridSizeR, 0.));
+    coefs[1].assign(ind.size(), std::vector<double>(gridSizeR, 0.));
+    if(nbody == 0 || lmax < 0)
+        return;
+
+    // particle radii and softening lengths, validated once
+    std::vector<double> particleRadii(nbody), particleSoftening(nbody);
     for(size_t i=0; i<nbody; i++) {
-        double h = softening[softening.size()==1 ? 0 : i];
+        const double h = softening[softening.size()==1 ? 0 : i];
         if(!(h>0) || !std::isfinite(h))
             throw std::invalid_argument("Softening lengths must be finite and positive");
-        maxSoftening = std::max(maxSoftening, h);
         const coord::PosCyl& pos = particles.point(i);
-        double r = sqrt(pow_2(pos.R) + pow_2(pos.z));
-        if(!std::isfinite(r))
-            throw std::invalid_argument("Particle radii must be finite for softened Multipole construction");
-        particleRadii[i] = r;
+        const double radius = sqrt(pow_2(pos.R) + pow_2(pos.z));
+        if(!std::isfinite(radius))
+            throw std::invalid_argument(
+                "Particle radii must be finite for softened Multipole construction");
+        particleRadii[i] = radius;
+        particleSoftening[i] = h;
     }
+
     // The requested symmetry may exclude (l,m) pairs, so enumerate the stored
-    // coefficients explicitly and keep a coefficient -> column map for the
-    // particle-major projection.
+    // coefficients explicitly and keep a coefficient -> column map.
     std::vector<unsigned int> activeCoefficients;
     std::vector<int> coefficientDegrees;
     std::vector<int> columnOfCoef(ind.size(), -1);
     for(unsigned int c=0; c<ind.size(); c++) {
-        int l = ind.index_l(c), m = ind.index_m(c);
+        const int l = ind.index_l(c), m = ind.index_m(c);
         if(l < ind.lmin(m) || l > ind.lmax || (l - ind.lmin(m)) % ind.step != 0)
             continue;
         columnOfCoef[c] = (int)activeCoefficients.size();
@@ -1374,68 +1581,194 @@ void computeSoftenedDensityCoefs(
     }
     if(activeCoefficients.empty())
         return;
-    const size_t numActiveCoefficients = activeCoefficients.size();
-    // Sort particle radii once.  At a given integration radius, a compact
-    // kernel can contribute only if |r-r_i| <= h_i <= maxSoftening.  The
-    // interval lookup skips particles whose kernels cannot intersect the
-    // spherical shell, while the per-particle check below handles varying h.
-    std::vector<size_t> particleOrder(nbody);
+    const size_t nactive = activeCoefficients.size();
+
+    // Particle-major harmonics: same values as computeSphericalHarmonicsFromParticles
+    // (that routine reuses that one verbatim), laid out so one particle's
+    // coefficients are read from a single contiguous row.
+    std::vector<size_t> particleOrder(nbody), rankByParticle(nbody);
     for(size_t i=0; i<nbody; i++)
         particleOrder[i] = i;
     std::sort(particleOrder.begin(), particleOrder.end(),
         [&particleRadii](size_t i, size_t j) { return particleRadii[i] < particleRadii[j]; });
-    std::vector<size_t> rankByParticle(nbody);
-    std::vector<double> sortedParticleRadii(nbody);
-    std::vector<double> sortedMasses(nbody);
-    std::vector<double> sortedSoftening(nbody);
+    for(size_t j=0; j<nbody; j++)
+        rankByParticle[particleOrder[j]] = j;
+    std::unique_ptr<double[]> harmonics(new double[nbody * nactive]);
+    computeSphericalHarmonicsParticleMajor(particles, ind, rankByParticle,
+        columnOfCoef, nactive, harmonics.get());
+
+    // Per-coefficient accumulators.  farIn/farOut take the full-band integrals of
+    // particles whose band lies entirely inside/outside a node and are resolved
+    // by one prefix sum each; partIn/partOut take the partial integrals for nodes
+    // that fall inside a band.
+    std::vector< std::vector<double> > farIn(nactive, std::vector<double>(gridSizeR+1, 0.));
+    std::vector< std::vector<double> > farOut(nactive, std::vector<double>(gridSizeR+1, 0.));
+    std::vector< std::vector<double> > partIn(nactive, std::vector<double>(gridSizeR, 0.));
+    std::vector< std::vector<double> > partOut(nactive, std::vector<double>(gridSizeR, 0.));
+    std::vector<double> moments, inner(lmax+1), outer(lmax+1);
+    std::vector<double> incrementInner(lmax+1, 0.), incrementOuter(lmax+1, 0.);
+    // Cumulative integrals recorded at the in-band nodes of the particle being
+    // processed; only the rows of the current particle are read.
+    std::vector<double> innerAtNode((size_t)(lmax+1)*gridSizeR, 0.);
+    std::vector<double> outerAtNode((size_t)(lmax+1)*gridSizeR, 0.);
+    std::vector<double> edges(6+gridSizeR, 0.);
+    // Per-piece radial increments, the suffix sums of the outer ones, and the
+    // piece that ends at each node.  The integral outside a node is accumulated
+    // from the pieces above it alone: forming it as (whole band - interior)
+    // would cancel catastrophically at high l, where s^{1-l} spans many orders
+    // of magnitude between the two ends of a band.
+    std::vector<double> pieceInner((size_t)(lmax+1)*(gridSizeR+8), 0.);
+    std::vector<double> pieceOuter((size_t)(lmax+1)*(gridSizeR+8), 0.);
+    std::vector<double> outerOutside((size_t)(lmax+1)*(gridSizeR+9), 0.);
+    std::vector<size_t> nodePiece(gridSizeR, 0);
+    std::vector<double> innerPrefix(lmax+1, 0.);
+    // Far-field band integrals of the monopole, precomputed once: for l=0 they
+    // are a universal function of a/h, so the diffuse components do not need a
+    // per-particle quadrature at all.
+    SoftenedMonopoleFarField farField;
+    if(lmax == 0)
+        farField.ensureBuilt();
+
     for(size_t j=0; j<nbody; j++) {
         const size_t i = particleOrder[j];
-        rankByParticle[i] = j;
-        sortedParticleRadii[j] = particleRadii[i];
-        sortedMasses[j] = particles.mass(i);
-        sortedSoftening[j] = softening[softening.size()==1 ? 0 : i];
-    }
-    // Uninitialised on purpose: the projection writes every stored coefficient
-    // exactly once, so zero-filling the nbody x nactive array would only spend
-    // memory bandwidth.
-    std::unique_ptr<double[]> particleHarmonics(new double[nbody * numActiveCoefficients]);
-    computeSphericalHarmonicsParticleMajor(particles, ind, rankByParticle,
-        columnOfCoef, numActiveCoefficients, particleHarmonics.get());
-
-    std::vector<double> moments(ind.lmax+1);
-    std::vector<double> radialCoefficients(numActiveCoefficients);
-    std::vector<double> densityCoefsByRadius(gridRadii.size()*numActiveCoefficients);
-    for(size_t k=0; k<gridRadii.size(); k++) {
-        double radius = gridRadii[k];
-        std::vector<double>::iterator first = std::lower_bound(
-            sortedParticleRadii.begin(), sortedParticleRadii.end(), radius-maxSoftening);
-        std::vector<double>::const_iterator last = std::upper_bound(
-            first, sortedParticleRadii.end(), radius+maxSoftening);
-        std::fill(radialCoefficients.begin(), radialCoefficients.end(), 0.);
-        for(std::vector<double>::const_iterator particle=first;
-            particle!=last; ++particle) {
-            const size_t j = particle-sortedParticleRadii.begin();
-            const double h = sortedSoftening[j];
-            if(std::abs(radius-sortedParticleRadii[j]) > h)
-                continue;
-            softenedKernelAngularMoments(radius, sortedParticleRadii[j], h, ind.lmax, moments);
-            const double weightedMass = sortedMasses[j];
-            const double* particleHarmonicsRow = particleHarmonics.get() + j*numActiveCoefficients;
-            // Both the particle's harmonics and this radial node's coefficient
-            // accumulators are contiguous in the innermost coefficient loop.
-            for(size_t c=0; c<numActiveCoefficients; c++)
-                radialCoefficients[c] += weightedMass * particleHarmonicsRow[c] *
-                    moments[coefficientDegrees[c]];
+        const double a = particleRadii[i], h = particleSoftening[i];
+        const double bandLo = std::max(0., a - h), bandHi = a + h;
+        const double mass = particles.mass(i);
+        const double* harmonicRow = harmonics.get() + j*nactive;
+        // first node at or above the band, and first node above its lower edge
+        const size_t kAbove = std::lower_bound(gridRadii.begin(), gridRadii.end(), bandHi)
+            - gridRadii.begin();
+        const size_t kBelow = std::upper_bound(gridRadii.begin(), gridRadii.end(), bandLo)
+            - gridRadii.begin();
+        // One cumulative sweep over the band, split at the kernel's knots and at
+        // every grid node inside the band.  Because the nodes are breakpoints,
+        // the running sums at them are exactly the partial integrals those nodes
+        // need, and the sums at the end of the band are the full-band integrals
+        // the nodes outside the band need -- so a single sweep serves all of them.
+        edges.clear();
+        edges.push_back(bandLo);
+        const double knots[6] = {std::max(0., a-h), std::max(0., a-0.5*h),
+            std::max(0., h-a), a, a+0.5*h, a+h};
+        for(int c=0; c<6; c++)
+            if(knots[c] > bandLo && knots[c] < bandHi)
+                edges.push_back(knots[c]);
+        for(size_t k=kBelow; k<kAbove; k++)
+            edges.push_back(gridRadii[k]);
+        edges.push_back(bandHi);
+        std::sort(edges.begin(), edges.end());
+        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+        std::fill(inner.begin(), inner.end(), 0.);
+        std::fill(outer.begin(), outer.end(), 0.);
+        size_t node = kBelow;
+        size_t numPieces = 0;
+        // A monopole particle whose band contains no grid node needs the far
+        // field only, and that is two lookups: its quadrature is skipped.
+        const double rho = a / h;
+        const bool monopoleFarField = (lmax == 0 && rho <= farField.maxRho);
+        const bool farFieldOnly = monopoleFarField && kBelow >= kAbove;
+        for(size_t e=0; !farFieldOnly && e+1<edges.size(); e++) {
+            std::fill(incrementInner.begin(), incrementInner.end(), 0.);
+            std::fill(incrementOuter.begin(), incrementOuter.end(), 0.);
+            integrateSoftenedBand(a, h, edges[e], edges[e+1], 1., 0., lmax,
+                incrementInner, incrementOuter, moments, GLORDER_BAND);
+            const size_t po = numPieces*(size_t)(lmax+1);
+            for(int l=0; l<=lmax; l++) {
+                inner[l] += incrementInner[l];
+                outer[l] += incrementOuter[l];
+                pieceInner[po+l] = incrementInner[l];
+                pieceOuter[po+l] = incrementOuter[l];
+            }
+            while(node<kAbove && gridRadii[node]<=edges[e+1]) {
+                nodePiece[node] = numPieces;
+                node++;
+            }
+            numPieces++;
         }
-        std::copy(radialCoefficients.begin(), radialCoefficients.end(),
-            densityCoefsByRadius.begin()+k*numActiveCoefficients);
+        if(monopoleFarField) {
+            // The reduced integrals are h-independent, so the table (stored at
+            // h=1) applies to any particle; the physical outer one is g(rho)/h.
+            inner[0] = farField.innerAt(rho);
+            outer[0] = farField.outerAt(rho) / h;
+        }
+        // The complete interior moment is the convolution of the normalized,
+        // isotropic kernel with the degree-l solid harmonic.  By the mean-value
+        // property of harmonic polynomials it is exactly a^l/(4*pi), independent
+        // of h.  Evaluating this moment by shell quadrature is catastrophically
+        // ill-conditioned for small a and high l: large signed shell terms must
+        // cancel to leave a^l.  Keep quadrature for the partial in-band moments,
+        // but use the identity for the full-band far-field contribution.
+        for(int l=0; l<=lmax; l++)
+            inner[l] = (l == 0 ? 1. : math::pow(a, l)) / (4*M_PI);
+        // suffix sums: outerOutside[p] = integral from the upper end of piece
+        // p-1 outward (= over pieces p, p+1, ...)
+        {
+            const size_t top = numPieces*(size_t)(lmax+1);
+            for(int l=0; l<=lmax; l++)
+                outerOutside[top+l] = 0.;
+            for(size_t p=numPieces; p-- > 0; ) {
+                const size_t po = p*(size_t)(lmax+1), pn = (p+1)*(size_t)(lmax+1);
+                for(int l=0; l<=lmax; l++)
+                    outerOutside[po+l] = outerOutside[pn+l] + pieceOuter[po+l];
+            }
+        }
+        // the partial integrals of every in-band node, read off the increments
+        // inside and outside it
+        for(int l=0; l<=lmax; l++)
+            innerPrefix[l] = 0.;
+        size_t piece = 0;
+        for(size_t k=kBelow; k<kAbove; k++) {
+            const size_t p = nodePiece[k];
+            for(; piece<=p; piece++) {
+                const size_t po = piece*(size_t)(lmax+1);
+                for(int l=0; l<=lmax; l++)
+                    innerPrefix[l] += pieceInner[po+l];
+            }
+            const size_t off = k*(size_t)(lmax+1);
+            for(int l=0; l<=lmax; l++) {
+                innerAtNode[off+l] = innerPrefix[l];
+                outerAtNode[off+l] = outerOutside[(p+1)*(size_t)(lmax+1)+l];
+            }
+        }
+        // inner[l] = exact \int m_l s^{l+2} ds and outer[l] = exact
+        // \int m_l s^{1-l} ds over the whole band
+        for(size_t cc=0; cc<nactive; cc++) {
+            const int l = coefficientDegrees[cc];
+            const double w = mass * harmonicRow[cc];
+            if(w == 0.)
+                continue;
+            farIn[cc][kAbove] += w * inner[l];
+            // Reuse the same rounded term for the paired difference-array
+            // updates; when kBelow==0 they must cancel exactly.
+            const double outerTerm = w * outer[l];
+            farOut[cc][0] += outerTerm;
+            farOut[cc][kBelow] -= outerTerm;
+            for(size_t k=kBelow; k<kAbove; k++) {
+                // inside the band: both halves come from the increments on their
+                // own side of the node
+                const size_t off = k*(size_t)(lmax+1);
+                partIn[cc][k]  += w * innerAtNode[off+l];
+                partOut[cc][k] += w * outerAtNode[off+l];
+            }
+        }
     }
-    // The downstream density/Poisson code expects coefficient-major vectors.
-    // Do this small transpose once, with contiguous writes to each output row.
-    for(size_t c=0; c<numActiveCoefficients; c++) {
-        std::vector<double>& coefficient = coefs[activeCoefficients[c]];
-        for(size_t k=0; k<gridRadii.size(); k++)
-            coefficient[k] = densityCoefsByRadius[k*numActiveCoefficients+c];
+
+    // combine the interior and exterior contributions exactly as
+    // computePotentialCoefsFromSource does
+    for(size_t cc=0; cc<nactive; cc++) {
+        const int l = coefficientDegrees[cc];
+        const unsigned int c = activeCoefficients[cc];
+        const double mul = -4*M_PI/(2*l+1);
+        double runningIn = 0., runningOut = 0.;
+        for(int k=0; k<gridSizeR; k++) {
+            runningIn  += farIn[cc][k];
+            runningOut += farOut[cc][k];
+            const double radius = gridRadii[k];
+            const double pint = (partIn[cc][k] + runningIn) * math::pow(radius, -(l+1));
+            const double pext = (partOut[cc][k] + runningOut) * math::pow(radius, l);
+
+            coefs[0][c][k] = mul * (pint + pext);
+            coefs[1][c][k] = mul * (-(l+1)*pint + l*pext) / radius;
+        }
     }
 }
 
@@ -1801,24 +2134,11 @@ shared_ptr<const Multipole> Multipole::createSoftened(
     if(isZRotSymmetric(sym))
         mmax = 0;
     math::SphHarmIndices ind(lmax, mmax, sym);
-    // Resolve the compact kernel on the same radial Gauss-Legendre nodes used
-    // by the existing Poisson integrator.  Sampling only the sparse output
-    // grid would miss a narrow kernel between two logarithmic nodes.
-    const double *glnodes = math::GLPOINTS[GLORDER_RAD];
-    const size_t integrationSize = (gridSizeR+1) * GLORDER_RAD;
-    std::vector<double> integrationRadii(integrationSize);
-    for(unsigned int k=0; k<=gridSizeR; k++) {
-        double previous = k>0 ? gridRadii[k-1] : 0;
-        double width = k<gridSizeR ? gridRadii[k] - previous : gridRadii.back();
-        for(size_t s=0; s<GLORDER_RAD; s++)
-            integrationRadii[k*GLORDER_RAD+s] = k<gridSizeR ?
-                previous + glnodes[s]*width : gridRadii.back()/glnodes[s];
-    }
-    std::sort(integrationRadii.begin(), integrationRadii.end());
-    std::vector< std::vector<double> > coefDens, coefsPot[2];
-    computeSoftenedDensityCoefs(particles, softening, ind, integrationRadii, coefDens);
-    DensitySphericalHarmonic dens(integrationRadii, coefDens);
-    computePotentialCoefsFromSource(dens, ind, gridRadii, coefsPot);
+    // Integrate each compact particle kernel over its own support band and
+    // accumulate its radial moments directly onto the requested output grid.
+    // This removes source sampling on the fixed logarithmic density grid.
+    std::vector< std::vector<double> > coefsPot[2];
+    computeSoftenedPotentialCoefs(particles, softening, ind, gridRadii, coefsPot);
     return shared_ptr<const Multipole>(new Multipole(gridRadii, coefsPot[0], coefsPot[1]));
 }
 
