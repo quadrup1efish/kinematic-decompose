@@ -1,0 +1,100 @@
+{
+  "source_cutout": "/Users/yuwa/sims.TNG/TNG50-1/cutouts/snapNum_99_subID_727693_fields_Coordinates_Velocities_Masses.hdf5",
+  "selection": "r<100 kpc; finite e/|emin|, jz/jc, jp/jc, mass; bound eoemin<0; |jz/jc|<1.5; jp/jc<1.5; JEHistogram(n_E=25,n_eps=50); then spheroid & |jz/jc|<=0.5",
+  "particle_counts": {
+    "stars_total": 22436,
+    "stars_r_lt_100_kpc": 22435,
+    "stars_finite_features_within_100_kpc": 22435,
+    "stars_keep": 22435,
+    "stars_spheroid_fit_sample": 10800
+  },
+  "normalization": {
+    "raw_min_stellar_energy_km2_s2": -36090.481963092214,
+    "all_star_eoemin_q05": -0.9871814191042022,
+    "fit_sample_eoemin_q05_q50_q95": [
+      -0.990506653536956,
+      -0.9386026171946558,
+      -0.48901203866006293
+    ],
+    "endpoint_bin_width": 0.01152698094422644,
+    "endpoint_count_all_stars": 962,
+    "endpoint_count_fit_sample": 698
+  },
+  "skewt_fit": {
+    "parameters_order": [
+      "w1",
+      "m1",
+      "s1",
+      "a1",
+      "1/nu1",
+      "m2",
+      "s2",
+      "a2",
+      "1/nu2"
+    ],
+    "parameters": [
+      0.7940477743983387,
+      -0.9594236048247743,
+      0.04401666634237839,
+      0.008701883484158096,
+      0.2652838145699624,
+      -0.6263137194373244,
+      0.1593887727933598,
+      -0.013496000504717914,
+      0.02
+    ],
+    "nu1": 3.7695477261628163,
+    "nu2": 50.0,
+    "mode1": -0.9591657051120178,
+    "mode2": -0.6280046424973019,
+    "cut": -0.8130466812009374,
+    "cut_definition": "weighted component-density crossing",
+    "ashman_separation": 2.0027288772019416,
+    "distinguishability_fallback_rule": "return get_Ecut valley when Ashman separation index < threshold",
+    "fallback_threshold_d_min": 1.0,
+    "fallback_triggered": false,
+    "returned_cut_equals_fitted_crossing": true,
+    "internal_findmin_calls_total": 2,
+    "internal_findmin_call_log": [
+      {
+        "kwargs": {},
+        "result": -0.6263137194373244
+      },
+      {
+        "kwargs": {},
+        "result": -0.6263137194373244
+      }
+    ],
+    "public_api_cut": -0.8130466812009374,
+    "legacy_findmin_cut_for_comparison_only": -0.6263137194373244,
+    "difference_skewt_minus_findmin": -0.18673296176361298,
+    "objective_ratio_to_single_component": 0.11266501471578043,
+    "fd_bins_capped_to_100": 76,
+    "smoothing_factor": 2.0,
+    "returned_cut_equals_independent_crossing": true,
+    "fit_sample_counts_below_cuts": {
+      "fitted_skewt_cut": 8318,
+      "findmin_comparison_cut": 9573,
+      "difference": 1255
+    },
+    "fit_sample_fractions_below_cuts": {
+      "fitted_skewt_cut": 0.7701851851851852,
+      "findmin_comparison_cut": 0.8863888888888889
+    },
+    "smoothed_histogram_local_minima": [
+      {
+        "eoemin": -0.7406429287549059,
+        "density": 0.64161389914237
+      },
+      {
+        "eoemin": -0.6138461383684154,
+        "density": 0.455001925512982
+      }
+    ],
+    "removed_location_guard_margins_reference_only": {
+      "m1_minus_lower_guard": -0.003226132412834648,
+      "upper_guard_minus_m2": 0.45856174361047075,
+      "note": "retired guard; recorded for reference only, it cannot replace the cut"
+    }
+  }
+}
