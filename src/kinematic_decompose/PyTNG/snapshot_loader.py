@@ -367,6 +367,18 @@ class Snapshot():
             return self.container
         else:
             self.container.translate(-cen)
+            # Explicit catalog centers bypass pynbody.analysis.center(), so
+            # apply the minimum-image convention ourselves for periodic data.
+            # The box length must be converted to the translated coordinates'
+            # unit before wrapping every particle family together.
+            boxsize = self.container.properties.get('boxsize')
+            if boxsize is not None:
+                positions = self.container['pos']
+                if isinstance(boxsize, SimArray):
+                    boxsize = boxsize.in_units(positions.units)
+                boxsize = float(np.asarray(boxsize))
+                if np.isfinite(boxsize) and boxsize > 0:
+                    positions -= boxsize * np.rint(positions / boxsize)
             if with_velocity:
                 if vel_cen is None:
                     cen = self.container.star[filt.Sphere(cen_size)]
