@@ -5,6 +5,7 @@ import gc
 import json
 import os
 from time import perf_counter
+from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
@@ -118,7 +119,6 @@ def save_scaling_figure(count_results, lmax_results):
     ax_n.add_artist(ax_n.legend(handles=[Line2D([], [], color="0.2", ls=":",
                         label="power-law extrapolation")], frameon=False,
                         loc="lower right", fontsize=9))
-    ax_n.text(0.03, 0.96, "(a)", transform=ax_n.transAxes, va="top", fontweight="bold")
     ax_n.legend(frameon=False, fontsize=9)
 
     orders = np.asarray([row["lmax"] + 1 for row in lmax_results], dtype=float)
@@ -135,11 +135,11 @@ def save_scaling_figure(count_results, lmax_results):
                 ":", color="#4c72b0", lw=1, label="Build power-law fit")
     ax_l.set(xlabel="Expansion order index, lmax + 1",
              ylabel="Time [s]")
-    ax_l.text(0.03, 0.96, "(b)", transform=ax_l.transAxes, va="top", fontweight="bold")
     ax_l.legend(frameon=False)
 
     fig.subplots_adjust(left=0.10, right=0.98, bottom=0.16, top=0.96, wspace=0.30)
-    path = os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", "/tmp/potential_performance_scaling.png")
+    default_path = Path(__file__).resolve().parents[1] / "images" / "potential_performance_scaling.png"
+    path = os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", str(default_path))
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     return path, fitted_n_slopes, beta

@@ -1,0 +1,361 @@
+{
+  "sample": {
+    "run": "TNG100-3",
+    "snap": 99,
+    "subhalo": 5,
+    "n_dm": 9013,
+    "n_star": 1773,
+    "n_gas": 184,
+    "kernel_support_kpc": 8.26690286389135,
+    "gridSizeR": 30,
+    "rmax_kpc": 345.256111205265,
+    "repeats": 7
+  },
+  "pipeline_build_median_s": 0.10059537482447922,
+  "pipeline_eval_median_s": 0.0017442910466343164,
+  "particle_count_scaling_exponent": {
+    "spherical_monopole": 0.9521187587651968,
+    "axisymmetric_l4": 0.9910495481575055,
+    "nonaxisymmetric_l4": 0.9766858659262246
+  },
+  "particle_count_scaling_exponent_plotted": {
+    "spherical_monopole": 0.9521187587651968,
+    "axisymmetric_l4": 0.9910495481575055,
+    "nonaxisymmetric_l4": 0.9766858659262246
+  },
+  "fitted_build_time_estimates_s": {
+    "spherical_monopole": {
+      "1000": 0.0045436374385089,
+      "10000": 0.040693254835956476,
+      "100000": 0.36445271251386,
+      "1000000": 3.2640736209025407
+    },
+    "axisymmetric_l4": {
+      "1000": 0.014862155155194868,
+      "10000": 0.14558993060114134,
+      "100000": 1.4262014944068342,
+      "1000000": 13.971094664649433
+    },
+    "nonaxisymmetric_l4": {
+      "1000": 0.0157408670861797,
+      "10000": 0.1491813447790239,
+      "100000": 1.4138403880951196,
+      "1000000": 13.39942769633771
+    }
+  },
+  "lmax_build_scaling_exponent_plotted": 1.4547944270053126,
+  "particle_count_fit_range": [
+    1024,
+    65536
+  ],
+  "N_above_real_sample_uses_deterministic_repeats": true,
+  "particle_count_extrapolation_limit": 1000000,
+  "figure": "results/potential_performance_2026-09-27.png",
+  "by_particle_count": [
+    {
+      "n_particles": 256,
+      "model": "spherical_monopole",
+      "build_median_s": 0.0018756669014692307,
+      "build_min_s": 0.0017137499526143074,
+      "evaluation_median_s": 8.762511424720287e-05,
+      "evaluation_min_s": 8.054194040596485e-05
+    },
+    {
+      "n_particles": 256,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.004118415992707014,
+      "build_min_s": 0.003616125090047717,
+      "evaluation_median_s": 0.0001332079991698265,
+      "evaluation_min_s": 0.00012816605158150196
+    },
+    {
+      "n_particles": 256,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.004345250083133578,
+      "build_min_s": 0.004257583990693092,
+      "evaluation_median_s": 0.000640499871224165,
+      "evaluation_min_s": 0.0006129159592092037
+    },
+    {
+      "n_particles": 512,
+      "model": "spherical_monopole",
+      "build_median_s": 0.0027807499282062054,
+      "build_min_s": 0.0026910409796983004,
+      "evaluation_median_s": 8.574989624321461e-05,
+      "evaluation_min_s": 8.175009861588478e-05
+    },
+    {
+      "n_particles": 512,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.0077680000104010105,
+      "build_min_s": 0.007694582920521498,
+      "evaluation_median_s": 0.00013391696847975254,
+      "evaluation_min_s": 0.0001307500060647726
+    },
+    {
+      "n_particles": 512,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.008369582938030362,
+      "build_min_s": 0.008256667060777545,
+      "evaluation_median_s": 0.0006225418765097857,
+      "evaluation_min_s": 0.0006151250563561916
+    },
+    {
+      "n_particles": 1024,
+      "model": "spherical_monopole",
+      "build_median_s": 0.005012042121961713,
+      "build_min_s": 0.004649332957342267,
+      "evaluation_median_s": 9.087496437132359e-05,
+      "evaluation_min_s": 8.804211392998695e-05
+    },
+    {
+      "n_particles": 1024,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.015400458127260208,
+      "build_min_s": 0.015239832922816277,
+      "evaluation_median_s": 0.0001377500593662262,
+      "evaluation_min_s": 0.00013570883311331272
+    },
+    {
+      "n_particles": 1024,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.016878749942407012,
+      "build_min_s": 0.016668167198076844,
+      "evaluation_median_s": 0.0006578750908374786,
+      "evaluation_min_s": 0.0006427918560802937
+    },
+    {
+      "n_particles": 2048,
+      "model": "spherical_monopole",
+      "build_median_s": 0.008942874846979976,
+      "build_min_s": 0.008843542076647282,
+      "evaluation_median_s": 9.549991227686405e-05,
+      "evaluation_min_s": 9.333319030702114e-05
+    },
+    {
+      "n_particles": 2048,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.03040270903147757,
+      "build_min_s": 0.0300952501129359,
+      "evaluation_median_s": 0.0001438749022781849,
+      "evaluation_min_s": 0.00014066696166992188
+    },
+    {
+      "n_particles": 2048,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.03133879089727998,
+      "build_min_s": 0.030678916024044156,
+      "evaluation_median_s": 0.0006282080430537462,
+      "evaluation_min_s": 0.0006221660878509283
+    },
+    {
+      "n_particles": 4096,
+      "model": "spherical_monopole",
+      "build_median_s": 0.016564042074605823,
+      "build_min_s": 0.016429916955530643,
+      "evaluation_median_s": 9.85830556601286e-05,
+      "evaluation_min_s": 9.270897135138512e-05
+    },
+    {
+      "n_particles": 4096,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.05947474995627999,
+      "build_min_s": 0.05916025000624359,
+      "evaluation_median_s": 0.00014229211956262589,
+      "evaluation_min_s": 0.00013866694644093513
+    },
+    {
+      "n_particles": 4096,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.060740749817341566,
+      "build_min_s": 0.060191208962351084,
+      "evaluation_median_s": 0.0006232920568436384,
+      "evaluation_min_s": 0.000613790936768055
+    },
+    {
+      "n_particles": 8192,
+      "model": "spherical_monopole",
+      "build_median_s": 0.03251120797358453,
+      "build_min_s": 0.032186999917030334,
+      "evaluation_median_s": 9.287497960031033e-05,
+      "evaluation_min_s": 8.983397856354713e-05
+    },
+    {
+      "n_particles": 8192,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.11796245886944234,
+      "build_min_s": 0.11730849999003112,
+      "evaluation_median_s": 0.0001441251952201128,
+      "evaluation_min_s": 0.00013733305968344212
+    },
+    {
+      "n_particles": 8192,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.12048375001177192,
+      "build_min_s": 0.11950895795598626,
+      "evaluation_median_s": 0.0006280411034822464,
+      "evaluation_min_s": 0.0006169169209897518
+    },
+    {
+      "n_particles": 9013,
+      "model": "spherical_monopole",
+      "build_median_s": 0.03538570809178054,
+      "build_min_s": 0.035084999864920974,
+      "evaluation_median_s": 9.183306246995926e-05,
+      "evaluation_min_s": 9.029218927025795e-05
+    },
+    {
+      "n_particles": 9013,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.1304930408950895,
+      "build_min_s": 0.12915337504819036,
+      "evaluation_median_s": 0.00014054193161427975,
+      "evaluation_min_s": 0.0001362909097224474
+    },
+    {
+      "n_particles": 9013,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.13242891686968505,
+      "build_min_s": 0.1318836670834571,
+      "evaluation_median_s": 0.0006347910966724157,
+      "evaluation_min_s": 0.0006186249665915966
+    },
+    {
+      "n_particles": 16384,
+      "model": "spherical_monopole",
+      "build_median_s": 0.06423208420164883,
+      "build_min_s": 0.06331816595047712,
+      "evaluation_median_s": 8.995900861918926e-05,
+      "evaluation_min_s": 8.77920538187027e-05
+    },
+    {
+      "n_particles": 16384,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.23713862500153482,
+      "build_min_s": 0.2364630000665784,
+      "evaluation_median_s": 0.00013820896856486797,
+      "evaluation_min_s": 0.0001360001042485237
+    },
+    {
+      "n_particles": 16384,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.23942225007340312,
+      "build_min_s": 0.2389590002130717,
+      "evaluation_median_s": 0.0007161248940974474,
+      "evaluation_min_s": 0.0006291659083217382
+    },
+    {
+      "n_particles": 32768,
+      "model": "spherical_monopole",
+      "build_median_s": 0.1282270411029458,
+      "build_min_s": 0.1275858748704195,
+      "evaluation_median_s": 9.116693399846554e-05,
+      "evaluation_min_s": 8.658296428620815e-05
+    },
+    {
+      "n_particles": 32768,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.4737639999948442,
+      "build_min_s": 0.47177349985577166,
+      "evaluation_median_s": 0.00013841711916029453,
+      "evaluation_min_s": 0.00013287505134940147
+    },
+    {
+      "n_particles": 32768,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.4804920421447605,
+      "build_min_s": 0.47914599999785423,
+      "evaluation_median_s": 0.0006841248832643032,
+      "evaluation_min_s": 0.0006178328767418861
+    },
+    {
+      "n_particles": 65536,
+      "model": "spherical_monopole",
+      "build_median_s": 0.2562816250137985,
+      "build_min_s": 0.2551322078797966,
+      "evaluation_median_s": 8.845818229019642e-05,
+      "evaluation_min_s": 8.520903065800667e-05
+    },
+    {
+      "n_particles": 65536,
+      "model": "axisymmetric_l4",
+      "build_median_s": 0.9479947919026017,
+      "build_min_s": 0.9466324159875512,
+      "evaluation_median_s": 0.00014204205945134163,
+      "evaluation_min_s": 0.00013470882549881935
+    },
+    {
+      "n_particles": 65536,
+      "model": "nonaxisymmetric_l4",
+      "build_median_s": 0.9612520830705762,
+      "build_min_s": 0.959210166009143,
+      "evaluation_median_s": 0.000628042034804821,
+      "evaluation_min_s": 0.000621875049546361
+    }
+  ],
+  "by_lmax": [
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 0,
+      "build_median_s": 0.02081037499010563,
+      "build_min_s": 0.020670583937317133,
+      "evaluation_median_s": 9.704194962978363e-05,
+      "evaluation_min_s": 8.937506936490536e-05
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 2,
+      "build_median_s": 0.031571583123877645,
+      "build_min_s": 0.031126624904572964,
+      "evaluation_median_s": 0.000132082961499691,
+      "evaluation_min_s": 0.00013037491589784622
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 4,
+      "build_median_s": 0.061165374936535954,
+      "build_min_s": 0.06071220804005861,
+      "evaluation_median_s": 0.00013975007459521294,
+      "evaluation_min_s": 0.00013649999164044857
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 6,
+      "build_median_s": 0.10625075013376772,
+      "build_min_s": 0.1058835000731051,
+      "evaluation_median_s": 0.0001432080753147602,
+      "evaluation_min_s": 0.00014170794747769833
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 8,
+      "build_median_s": 0.15331120789051056,
+      "build_min_s": 0.15288270800374448,
+      "evaluation_median_s": 0.00015162513591349125,
+      "evaluation_min_s": 0.00014958390966057777
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 10,
+      "build_median_s": 0.20450612506829202,
+      "build_min_s": 0.20371129200793803,
+      "evaluation_median_s": 0.0001634999644011259,
+      "evaluation_min_s": 0.00015341700054705143
+    },
+    {
+      "n_particles": 1773,
+      "symmetry": "axisymmetric",
+      "lmax": 12,
+      "build_median_s": 0.2593042498920113,
+      "build_min_s": 0.25865016714669764,
+      "evaluation_median_s": 0.00015275017358362675,
+      "evaluation_min_s": 0.0001490830909460783
+    }
+  ]
+}
