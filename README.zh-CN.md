@@ -159,7 +159,7 @@ keep = (galaxy.s['eoemin'] < 0) & (np.abs(galaxy.s['jzojc']) < 1.5) & (galaxy.s[
 
 # 5. 确定能量截断
 sph, _ = util.JEHistogram(galaxy.s['eoemin'][keep], galaxy.s['jzojc'][keep])
-eoemin_cut = util.get_Ecut(galaxy.s['eoemin'][keep][sph], galaxy.s['mass'][keep][sph])
+eoemin_cut = util.get_Ecut_skewt(galaxy.s['eoemin'][keep][sph], galaxy.s['mass'][keep][sph])
 
 # 6. 标准化并运行 AutoGMM
 scaler = preprocessing.RobustScaler()

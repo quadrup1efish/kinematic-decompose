@@ -6,8 +6,17 @@ class RobustScaler():
         self.quantile_range = quantile_range
         
     def fit(self, X):
+        X = np.asarray(X, dtype=float)
+        if X.ndim != 2:
+            raise ValueError("X must be a two-dimensional array")
+        if np.any(np.isinf(X)):
+            raise ValueError("X must not contain infinite values")
+        if np.any(np.all(np.isnan(X), axis=0)):
+            raise ValueError("cannot fit RobustScaler on an all-NaN feature")
         self.center_ = np.nanmedian(X, axis=0)
-        self.scale_  = np.abs(np.subtract(*np.percentile(X, self.quantile_range, axis=0)))
+        quantiles = np.nanpercentile(X, self.quantile_range, axis=0)
+        self.scale_ = np.abs(np.subtract(*quantiles))
+        self.scale_[~np.isfinite(self.scale_) | (self.scale_ == 0)] = 1.0
         return self
     
     def transform(self, X, columns=None):
@@ -17,9 +26,7 @@ class RobustScaler():
             return (X - self.center_[columns]) / self.scale_[columns]
     
     def fit_transform(self, X):
-        self.center_ = np.nanmedian(X, axis=0)
-        self.scale_  = np.abs(np.subtract(*np.percentile(X, self.quantile_range, axis=0)))
-        return (X - self.center_) / self.scale_
+        return self.fit(X).transform(np.asarray(X, dtype=float))
     
     def inverse_transform(self, X, columns=None):
         if columns is None:

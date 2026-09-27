@@ -20,7 +20,6 @@ import tempfile
 import pathlib
 from pathlib import Path
 
-RCUT_RANGE = [1, 7]
 OUTPUT_PATH = Path("/home/tnguser/output/TNG50-1")
 OUTPUT_PATH.mkdir(exist_ok=True)
 stellar_assembly_dir = pathlib.Path(f"/home/tnguser/gsf/output/TNG50-1/stellar_assembly")
@@ -88,14 +87,23 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
 
     sph, disk = util.JEHistogram(galaxy.s['eoemin'][keep_particle], galaxy.s['jzojc'][keep_particle], n_E=25, n_eps=50)
     sph = (sph) & (np.abs(galaxy.s['jzojc'][keep_particle])<=0.5)
-    eoemin_cut= util.get_Ecut(galaxy.s['eoemin'][keep_particle][sph], galaxy.s['mass'][keep_particle][sph], M_bin=100, m_bin=25, Mmin=0.1)
-    r = np.logspace(-1, 1, 100)
+    eoemin_cut = util.get_Ecut_skewt(
+        galaxy.s['eoemin'][keep_particle][sph],
+        galaxy.s['mass'][keep_particle][sph],
+    )
+    r_min = 2.0 * float(galaxy.properties['eps'])
+    r_max = 10.0
+    if not 0.0 < r_min < r_max:
+        raise ValueError(f"Invalid energy-cut radius range [{r_min}, {r_max}] kpc")
+    r = np.logspace(np.log10(r_min), np.log10(r_max), 100)
     points = np.column_stack((r*0, r*0, r))
     potential = pot.potential(points)
-    max_eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, RCUT_RANGE[1])]
-    min_eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, RCUT_RANGE[0])]
+    potential_eoemin = potential / np.abs(galaxy.s['e'].min())
+    min_eoemin_cut = potential_eoemin[0]
+    max_eoemin_cut = potential_eoemin[-1]
     if eoemin_cut == 0 or max_eoemin_cut < eoemin_cut or eoemin_cut < min_eoemin_cut:
-        eoemin_cut = (potential/np.abs(galaxy.s['e'].min()))[np.searchsorted(r, 3.5)]
+        fallback_radius = float(np.clip(3.5, r_min, r_max))
+        eoemin_cut = potential_eoemin[np.searchsorted(r, fallback_radius)]
 
     scaler = preprocessing.RobustScaler()
     X_train= scaler.fit_transform(X[keep_particle])

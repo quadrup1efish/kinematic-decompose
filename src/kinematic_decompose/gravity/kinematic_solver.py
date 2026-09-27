@@ -24,6 +24,13 @@ _GALAXY_POTENTIAL_COMPONENTS = [
 # h = 2.8 * epsilon_Plummer.
 _KERNEL_SUPPORT_PER_PLUMMER_EQUIVALENT = 2.8
 
+
+def _circular_velocity_from_radial_force(radii: np.ndarray, radial_force: np.ndarray) -> np.ndarray:
+    """Return circular speeds, marking radii with outward/non-finite force invalid."""
+    vc_squared = -np.asarray(radii, dtype=float) * np.asarray(radial_force, dtype=float)
+    valid = np.isfinite(vc_squared) & (vc_squared > 0)
+    return np.sqrt(np.where(valid, vc_squared, np.nan))
+
 def create_multipole_potential(
     positions: np.ndarray,
     masses: np.ndarray,
@@ -154,11 +161,14 @@ def calculate_kinematic_param(
         potential: Pre-computed potential; if None, built from the galaxy
             particle distribution (unless `filename` is given)
         partType: Family to attach the circular angular momentum to
-            ('star' | 'gas' | 'dm')
+            ('star' | 'gas' | 'dm'). Also the family whose 'phi' is evaluated:
+            the potential is only computed for this family's particles, since
+            no other family's 'phi'/'e' is consumed downstream.
         filename: Potential file to load (if None, compute from particles)
 
     Returns:
-        Modified galaxy snapshot with added 'phi' and 'jc' fields
+        Modified galaxy snapshot with 'phi' and 'jc' added to the `partType`
+        family
     """
     # 1. Create or load potential
     if potential is None:
@@ -168,8 +178,19 @@ def calculate_kinematic_param(
             potential = Potential(filename)
     assert potential is not None  # built / loaded / passed in all branches
     # 2. Compute particle potentials
-    galaxy['phi'] = SimArray(
-        potential.potential(galaxy['pos']),
+    # Only the family that actually consumes 'phi'/'e' is evaluated. In a
+    # group-sized cutout the snapshot holds several times more DM and gas
+    # particles than stars, and their potentials are never read: dump_container
+    # stores target_families=['star'], and the pipeline only uses galaxy.s['e'].
+    # Potential evaluation is point-by-point independent, so the values handed
+    # to `partType` are bit-identical to evaluating every particle.
+    particle_data = {
+        'star': galaxy.s,
+        'gas': galaxy.g,
+        'dm': galaxy.dm,
+    }.get(partType, galaxy)
+    particle_data['phi'] = SimArray(
+        potential.potential(particle_data['pos']),
         units=units.km**2 / units.s**2
     )
     
@@ -193,8 +214,12 @@ def calculate_kinematic_param(
     ])
     
     circular_potentials = potential.potential(grid_points)
-    radial_forces = np.linalg.norm(potential.force(grid_points)[:, :2], axis=1)
-    circular_velocities = np.sqrt(r_midpoints * radial_forces)
+    forces = np.asarray(potential.force(grid_points))
+    radial_unit = grid_points[:, :2] / r_midpoints[:, np.newaxis]
+    radial_forces = np.sum(forces[:, :2] * radial_unit, axis=1)
+    circular_velocities = _circular_velocity_from_radial_force(
+        r_midpoints, radial_forces
+    )
     circular_energies = 0.5 * circular_velocities**2 + circular_potentials
     circular_angular_momenta = r_midpoints * circular_velocities
     
@@ -241,11 +266,6 @@ def calculate_kinematic_param(
     # (angular momenta are non-negative: r * sqrt(r * F_r)).
     envelope_jc = np.maximum(envelope_jc, np.finfo(float).eps)
     
-    particle_data = {
-        'star': galaxy.s,
-        'gas': galaxy.g,
-        'dm': galaxy.dm,
-    }.get(partType, galaxy)
     particle_energies = particle_data['e']
     
     # np.interp: piecewise-linear in log-log space, constant extrapolation at

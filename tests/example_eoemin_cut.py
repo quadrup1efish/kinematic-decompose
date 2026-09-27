@@ -1,9 +1,11 @@
 """
-Functional tests for get_Ecut - the energy-cut algorithm used in kinematic decomposition.
+Functional regression tests for the legacy get_Ecut energy-cut helper.
 
 get_Ecut(eb, masses) separates bound spheroidal components (low energy) from
 the disk (high energy) by locating the valley bottom in the energy (eoemin)
-histogram (FindMin: sign change of the histogram slope).
+histogram (FindMin: sign change of the histogram slope). The production
+pipeline now defaults to get_Ecut_skewt; this file keeps regression coverage
+for the legacy helper, which remains an initializer/fallback dependency.
 
 Every scenario is a *synthetic combination* of simple distributions, so the
 true valley is analytically known. Each scenario declares its sub-distribution

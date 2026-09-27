@@ -40,7 +40,10 @@ step = 0.5*eps
 keep_particle = (galaxy.s['eoemin']<0)&(np.abs(galaxy.s['jzojc'])<1.5)&(galaxy.s['jpojc']<1.5)
 sph, _ = util.JEHistogram(galaxy.s['eoemin'][keep_particle], galaxy.s['jzojc'][keep_particle], n_E=25, n_eps=50)
 sph = (sph) & (np.abs(galaxy.s['jzojc'][keep_particle])<=0.5)
-eoemin_cut= util.get_Ecut(galaxy.s['eoemin'][keep_particle][sph], galaxy.s['mass'][keep_particle][sph], M_bin=100, m_bin=25, Mmin=0.1)
+eoemin_cut = util.get_Ecut_skewt(
+    galaxy.s['eoemin'][keep_particle][sph],
+    galaxy.s['mass'][keep_particle][sph],
+)
 jzojc_cut=0.5
 scaler = preprocessing.RobustScaler()
 X_train= scaler.fit_transform(X)
