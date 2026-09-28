@@ -1,241 +1,297 @@
 #!/usr/bin/env python3
-"""Benchmark native softened Multipole build/evaluation against real TNG particles."""
+"""Benchmark softened Multipole construction versus stock Agama on a Plummer model.
+
+The stock Agama and project-native extensions are measured in separate processes:
+loading both native libraries together can collide at the symbol level.
+"""
 
 import gc
 import json
 import os
-from time import perf_counter
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
+from time import perf_counter
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import numpy as np
 
-from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
-from kinematic_decompose.gravity.kinematic_solver import construct_galaxy_potential_model
-from kinematic_decompose.potential import Potential
+from kinematic_decompose.potential import Potential, setUnits
 
-RUN = "TNG100-3"
-SNAP = 99
-SUBHALO = 5
 GRID_SIZE_R = 30
-REPEATS = 7
-LMAX_VALUES = (0, 2, 4, 6, 8, 10, 12)
-PARTICLE_COUNTS = (256, 512, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536)
-SCALING_FIT_MIN_N = 1024
-EXTRAPOLATE_TO_N = 1_000_000
-PREDICTION_COUNTS = (1_000, 10_000, 100_000, 1_000_000)
+REPEATS = 9
+MIN_PARTICLES = 100_000
+MAX_PARTICLES = 10_000_000
+N_LOG_SAMPLES = 13
+PLUMMER_SCALE_KPC = 1.0
+PLUMMER_TRUNCATION_KPC = 10.0
+PLUMMER_TOTAL_MASS_MSUN = 1.0e10
+RMIN_KPC = 1.0e-3
+SOFTENING_AT_REFERENCE_KPC = 0.2
+SOFTENING_REFERENCE_N = 1_000
+ERROR_PROBE_COUNT = 64
 
 
-def make_potential(positions, masses, support, symmetry, lmax, rmax):
-    return Potential(
-        type="Multipole",
-        particles=(positions, masses),
-        softening=support,
-        symmetry=symmetry,
-        lmax=lmax,
-        mmax=lmax,
-        rmin=0,
-        rmax=rmax,
-        gridSizeR=GRID_SIZE_R,
-    )
-
-
-def time_configuration(positions, masses, support, symmetry, lmax, rmax, query):
-    build_times = []
-    evaluation_times = []
-    for _ in range(REPEATS):
-        start = perf_counter()
-        pot = make_potential(positions, masses, support, symmetry, lmax, rmax)
-        build_times.append(perf_counter() - start)
-        start = perf_counter()
-        values = pot.potential(query)
-        evaluation_times.append(perf_counter() - start)
-        if not np.all(np.isfinite(values)):
-            raise RuntimeError("Non-finite potential encountered during timing")
-        del pot
-        gc.collect()
+def summarize(times):
+    values = np.asarray(times, dtype=float)
+    p16, median, p84 = np.percentile(values, [16, 50, 84])
     return {
-        "build_median_s": float(np.median(build_times)),
-        "build_min_s": float(np.min(build_times)),
-        "evaluation_median_s": float(np.median(evaluation_times)),
-        "evaluation_min_s": float(np.min(evaluation_times)),
+        "build_times_s": values.tolist(),
+        "build_p16_s": float(p16),
+        "build_median_s": float(median),
+        "build_p84_s": float(p84),
     }
 
 
-def save_scaling_figure(count_results, lmax_results):
+def time_native(positions, masses, support, rmax, query):
+    times = []
+    for _ in range(REPEATS):
+        start = perf_counter()
+        potential = Potential(
+            type="Multipole",
+            particles=(positions, masses),
+            softening=support,
+            symmetry="s",
+            lmax=0,
+            mmax=0,
+            rmin=RMIN_KPC,
+            rmax=rmax,
+            gridSizeR=GRID_SIZE_R,
+        )
+        times.append(perf_counter() - start)
+        del potential
+        gc.collect()
+    potential = Potential(
+        type="Multipole", particles=(positions, masses), softening=support,
+        symmetry="s", lmax=0, mmax=0, rmin=RMIN_KPC, rmax=rmax,
+        gridSizeR=GRID_SIZE_R,
+    )
+    phi = np.asarray(potential.potential(query), dtype=float).reshape(-1)
+    force = np.asarray(potential.force(query), dtype=float)
+    result = summarize(times)
+    result["potential_probe"] = phi.tolist()
+    result["radial_force_probe"] = force[:, 0].tolist()
+    return result
+
+
+def time_stock_agama(positions, masses, rmax, query, scratch_dir):
+    worker = Path(__file__).with_name("_agama_potential_performance_worker.py")
+    input_path = Path(scratch_dir) / "agama_benchmark_input.npz"
+    np.savez(input_path, positions=positions, masses=masses,
+             query_radii=query[:, 0])
+    result = subprocess.run(
+        [sys.executable, str(worker), str(input_path), str(REPEATS),
+         str(RMIN_KPC), str(rmax)],
+        check=True, capture_output=True, text=True,
+    )
+    output = json.loads(result.stdout)
+    summary = summarize(output["build_times_s"])
+    summary["potential_probe"] = output["potential"]
+    summary["radial_force_probe"] = output["radial_force"]
+    return summary
+
+
+def analytic_plummer(radii):
+    """Potential and inward radial-force magnitude of the truncated Plummer model."""
+    radii = np.asarray(radii, dtype=float)
+    scale = PLUMMER_SCALE_KPC
+    truncation = PLUMMER_TRUNCATION_KPC
+    enclosed_fraction = (truncation / np.sqrt(truncation**2 + scale**2))**3
+    source_mass = PLUMMER_TOTAL_MASS_MSUN / enclosed_fraction
+    g = 4.30091727067736e-6  # kpc (km/s)^2 / Msun
+    inside = radii <= truncation
+    phi = np.empty_like(radii)
+    force = np.empty_like(radii)
+    boundary_term = scale**2 / (truncation**2 + scale**2)**1.5
+    phi[inside] = -g * source_mass * (
+        1 / np.sqrt(radii[inside]**2 + scale**2) - boundary_term
+    )
+    force[inside] = -(g * source_mass * radii[inside]
+                      / (radii[inside]**2 + scale**2)**1.5)
+    phi[~inside] = -g * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]
+    force[~inside] = -g * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]**2
+    return phi, force
+
+
+def error_summary(model, truth):
+    absolute_relative = np.abs(np.asarray(model) - truth) / np.abs(truth)
+    p16, median, p84 = np.percentile(absolute_relative, [16, 50, 84])
+    return {"p16": float(p16), "median": float(median), "p84": float(p84)}
+
+
+def save_scaling_figure(rows):
     plt.rcParams.update({
         "font.family": "serif",
         "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "stix",
-        "font.size": 13,
-        "axes.labelsize": 15,
-        "xtick.labelsize": 12,
-        "ytick.labelsize": 12,
-        "legend.fontsize": 10,
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "xtick.labelsize": 10,
+        "ytick.labelsize": 10,
+        "legend.fontsize": 9,
     })
-    fig, (ax_n, ax_l) = plt.subplots(1, 2, figsize=(10.2, 4.6))
-    colors = {"spherical_monopole": "#4c72b0", "axisymmetric_l4": "#c44e52",
-              "nonaxisymmetric_l4": "#55a868"}
-    labels = {"spherical_monopole": "Spherical, $l_{\\max}=0$",
-              "axisymmetric_l4": "Axisymmetric, $l_{\\max}=4$",
-              "nonaxisymmetric_l4": "No symmetry, $l_{\\max}=4$"}
-
-    fitted_n_slopes = {}
-    for model, color in colors.items():
-        rows = sorted((row for row in count_results if row["model"] == model),
-                      key=lambda row: row["n_particles"])
-        n = np.asarray([row["n_particles"] for row in rows], dtype=float)
-        build = np.asarray([row["build_median_s"] for row in rows])
-        fit_rows = [row for row in rows if row["n_particles"] >= SCALING_FIT_MIN_N]
-        n_fit = np.asarray([row["n_particles"] for row in fit_rows], dtype=float)
-        build_fit = np.asarray([row["build_median_s"] for row in fit_rows])
-        alpha = float(np.polyfit(np.log(n_fit), np.log(build_fit), 1)[0])
-        fitted_n_slopes[model] = alpha
-        ax_n.loglog(n, build, "o-", color=color,
-                    label=f"{labels[model]}: $\\alpha={alpha:.2f}$")
-        coeff = np.polyfit(np.log(n_fit), np.log(build_fit), 1)
-        n_projection = np.geomspace(n_fit[0], EXTRAPOLATE_TO_N, 120)
-        projected_time = np.exp(coeff[1]) * n_projection**coeff[0]
-        measured_end = n_fit[-1]
-        measured_mask = n_projection <= measured_end
-        ax_n.loglog(n_projection[measured_mask], projected_time[measured_mask],
-                    "-", color=color, alpha=0.7, lw=1.2)
-        ax_n.loglog(n_projection[~measured_mask], projected_time[~measured_mask],
-                    ":", color=color, alpha=0.9, lw=1.6)
-    sphere_rows = sorted((row for row in count_results
-                         if row["model"] == "spherical_monopole"),
-                         key=lambda row: row["n_particles"])
-    sphere_fit = [row for row in sphere_rows if row["n_particles"] >= SCALING_FIT_MIN_N]
-    nref = np.geomspace(SCALING_FIT_MIN_N, EXTRAPOLATE_TO_N, 120)
-    tref = sphere_fit[0]["build_median_s"] * nref / sphere_fit[0]["n_particles"]
-    ax_n.loglog(nref, tref, "k--", lw=1, label="$O(N)$ reference")
-    ax_n.set(xlabel="Number of particles, $N$", ylabel="Potential build time [s]")
-    ax_n.set_xlim(1e3, EXTRAPOLATE_TO_N)
-    ax_n.axvline(sphere_rows[-1]["n_particles"], color="0.45", ls="--", lw=1,
-                 label="measured range limit")
-    ax_n.add_artist(ax_n.legend(handles=[Line2D([], [], color="0.2", ls=":",
-                        label="power-law extrapolation")], frameon=False,
-                        loc="lower right", fontsize=9))
-    ax_n.legend(frameon=False, fontsize=9)
-
-    orders = np.asarray([row["lmax"] + 1 for row in lmax_results], dtype=float)
-    build_l = np.asarray([row["build_median_s"] for row in lmax_results])
-    eval_l = np.asarray([row["evaluation_median_s"] for row in lmax_results])
-    fit = orders >= 3  # lmax >= 2; omit lmax=0 from the nontrivial-order fit
-    beta = float(np.polyfit(np.log(orders[fit]), np.log(build_l[fit]), 1)[0])
-    ax_l.loglog(orders, build_l, "o-", color="#4c72b0",
-                label=f"Build: $\\beta={beta:.2f}$")
-    ax_l.loglog(orders, eval_l, "s--", color="#c44e52", label="Evaluation")
-    xfit = np.geomspace(orders[fit][0], orders[fit][-1], 60)
-    fit_coeff = np.polyfit(np.log(orders[fit]), np.log(build_l[fit]), 1)
-    ax_l.loglog(xfit, np.exp(fit_coeff[1]) * xfit**fit_coeff[0],
-                ":", color="#4c72b0", lw=1, label="Build power-law fit")
-    ax_l.set(xlabel="Expansion order index, lmax + 1",
-             ylabel="Time [s]")
-    ax_l.legend(frameon=False)
-
-    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.16, top=0.96, wspace=0.30)
+    fig, (ax, err_ax) = plt.subplots(1, 2, figsize=(12.4, 5.2),
+                                     gridspec_kw={"width_ratios": [1, 1]})
+    styles = [
+        ("native", "#303030", "o", "Native softened"),
+        ("agama", "#e87500", "s", "Stock Agama, unsoftened"),
+    ]
+    exponents = {}
+    ordered = sorted(rows, key=lambda row: row["n_particles"])
+    n = np.asarray([row["n_particles"] for row in ordered], dtype=float)
+    for key, color, marker, label in styles:
+        med = np.asarray([row[key]["build_median_s"] for row in ordered])
+        lo = np.asarray([row[key]["build_p16_s"] for row in ordered])
+        hi = np.asarray([row[key]["build_p84_s"] for row in ordered])
+        errors = np.vstack((med - lo, hi - med))
+        ax.errorbar(n, med, yerr=errors, color=color, marker=marker,
+                    linestyle="none", linewidth=1.1, markersize=5.5,
+                    capsize=2.5, elinewidth=1.0, zorder=3)
+        ax.plot(n, med, color=color, linewidth=1.05, alpha=0.7, zorder=2)
+        high_n = n > MIN_PARTICLES
+        exponent, intercept = np.polyfit(np.log(n[high_n]), np.log(med[high_n]), 1)
+        exponents[key] = float(exponent)
+        fit_n = np.geomspace(n[high_n][0], n[high_n][-1], 60)
+        ax.loglog(fit_n, np.exp(intercept) * fit_n**exponent,
+                  linestyle="--", color=color, linewidth=1.7,
+                  alpha=0.8, zorder=1)
+        fit_end = float(np.exp(intercept) * MAX_PARTICLES**exponent)
+        ax.annotate(rf"$\alpha={exponent:.2f}$",
+                    xy=(MAX_PARTICLES, fit_end), xytext=(-5, 4 if key == "native" else -9),
+                    textcoords="offset points", ha="right", va="center",
+                    color=color, fontsize=10)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlim(MIN_PARTICLES, MAX_PARTICLES)
+    ax.set_xlabel(r"Number of particles, $N_{\mathrm{part}}$")
+    ax.set_ylabel("Potential build time [s]")
+    for i, (key, color, _, label) in enumerate(styles):
+        ax.text(0.035, 0.95 - 0.065 * i, label, transform=ax.transAxes,
+                ha="left", va="top", color=color, fontsize=11.5)
+    ax.text(0.035, 0.79,
+            "Fixed grid and $l_{\\max}=0$; expected cost $O(N)$",
+            transform=ax.transAxes, ha="left", va="top", color="0.3", fontsize=9)
+    ax.grid(True, which="major", color="0.72", linestyle="--", alpha=0.55, linewidth=0.8)
+    ax.grid(True, which="minor", color="0.82", linestyle="--", alpha=0.35, linewidth=0.65)
+    error_styles = [
+        ("native", "potential_error", "#303030", "o", "-", r"Native $|\Delta\Phi/\Phi|$"),
+        ("agama", "potential_error", "#e87500", "s", "-", r"Agama $|\Delta\Phi/\Phi|$"),
+        ("native", "force_error", "#303030", "^", "--", r"Native $|\Delta F_r/F_r|$"),
+        ("agama", "force_error", "#e87500", "v", "--", r"Agama $|\Delta F_r/F_r|$"),
+    ]
+    for backend, metric, color, marker, linestyle, label in error_styles:
+        med = np.asarray([row[backend][metric]["median"] for row in ordered])
+        err_ax.plot(n, med, color=color, marker=marker, linestyle=linestyle,
+                    linewidth=1.35, markersize=4.2, label=label)
+    err_ax.set_xscale("log")
+    err_ax.set_yscale("log")
+    err_ax.set_xlim(MIN_PARTICLES, MAX_PARTICLES)
+    err_ax.set_xlabel(r"Number of particles, $N_{\mathrm{part}}$")
+    error_medians = [row[backend][metric]["median"]
+                     for row in ordered for backend, metric, *_ in error_styles]
+    err_ax.set_ylim(max(min(error_medians) * 0.5, 1e-8), max(error_medians) * 2)
+    err_ax.set_ylabel("Median absolute relative error")
+    err_ax.text(0.04, 0.025,
+                "Median over $r=0.05$–$10$ kpc\n"
+                "$h(N)=0.2\\,\\mathrm{kpc}(1000/N)^{1/3}$; Native includes softening bias.",
+                transform=err_ax.transAxes, fontsize=7.7, color="0.3",
+                va="bottom")
+    err_ax.legend(frameon=False, fontsize=8, loc="upper right", ncol=1)
+    err_ax.grid(True, which="major", color="0.72", linestyle="--", alpha=0.55, linewidth=0.8)
+    err_ax.grid(True, which="minor", color="0.82", linestyle="--", alpha=0.35, linewidth=0.65)
+    fig.tight_layout()
     default_path = Path(__file__).resolve().parents[1] / "images" / "potential_performance_scaling.png"
     path = os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", str(default_path))
     fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    return path, fitted_n_slopes, beta
+    return path, exponents
+
+
+def sample_truncated_plummer(count, rng):
+    """Draw from a Plummer sphere truncated at the fixed outer radius."""
+    scale = PLUMMER_SCALE_KPC
+    truncation = PLUMMER_TRUNCATION_KPC
+    enclosed_fraction = (truncation / np.sqrt(truncation**2 + scale**2))**3
+    q = rng.random(count) * enclosed_fraction
+    q23 = q**(2.0 / 3.0)
+    radius = scale * np.sqrt(q23 / (1.0 - q23))
+    cosine = rng.uniform(-1.0, 1.0, count)
+    azimuth = rng.uniform(0.0, 2.0 * np.pi, count)
+    sine = np.sqrt(1.0 - cosine**2)
+    return np.column_stack((radius * sine * np.cos(azimuth),
+                            radius * sine * np.sin(azimuth),
+                            radius * cosine))
 
 
 def main():
-    snapshot = Snapshot(f"/Users/yuwa/sims.TNG/{RUN}/output", SNAP)
-    snapshot.load_particle(ID=SUBHALO, load_particle_fields="potential")
-    snapshot.physical_units()
-    snapshot.load_group_catalog(ID=SUBHALO)
-    snapshot.GC_physical_units()
-    snapshot.center(cen=snapshot.group_catalog["SubhaloPos"])
-    snapshot.faceon(
-        align_with="star",
-        range=[3*snapshot.properties["eps"], 5*snapshot.s.r50],
-        as_context=False,
-    )
-    galaxy = snapshot.container
-    support = 2.8 * float(galaxy.properties["eps"])
-    rmax = float(galaxy.R_vir)
-    query = np.ascontiguousarray(np.asarray(galaxy.s["pos"], dtype=float))
-
-    dm_pos = np.ascontiguousarray(np.asarray(galaxy.dm["pos"], dtype=float))
-    dm_mass = np.full(len(dm_pos), float(galaxy.properties["mDM"]))
+    setUnits(length=1, mass=1, velocity=1)
     rng = np.random.default_rng(2026)
-    dm_order = rng.permutation(len(dm_pos))
-    n_values = sorted(set(PARTICLE_COUNTS + (len(dm_pos),)))
-    n_results = []
-    for n in n_values:
-        choice = dm_order[np.arange(n) % len(dm_order)]
-        positions = np.ascontiguousarray(dm_pos[choice])
-        masses = np.ascontiguousarray(dm_mass[choice])
-        for name, symmetry, lmax in (("spherical_monopole", "s", 0),
-                                     ("axisymmetric_l4", "a", 4),
-                                     ("nonaxisymmetric_l4", "n", 4)):
-            row = {"n_particles": n, "model": name}
-            row.update(time_configuration(positions, masses, support, symmetry, lmax, rmax, query))
-            n_results.append(row)
+    all_positions = sample_truncated_plummer(MAX_PARTICLES, rng)
+    rmax = PLUMMER_TRUNCATION_KPC
 
-    star_pos = np.ascontiguousarray(np.asarray(galaxy.s["pos"], dtype=float))
-    star_mass = np.ascontiguousarray(np.asarray(galaxy.s["mass"], dtype=float))
-    lmax_results = []
-    for lmax in LMAX_VALUES:
-        row = {"n_particles": len(star_pos), "symmetry": "axisymmetric", "lmax": lmax}
-        row.update(time_configuration(star_pos, star_mass, support, "a", lmax, rmax, query))
-        lmax_results.append(row)
+    counts = np.unique(np.rint(np.geomspace(
+        MIN_PARTICLES, MAX_PARTICLES, N_LOG_SAMPLES
+    )).astype(int))
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="potential-perf-", dir=os.environ.get("TMPDIR")) as scratch:
+        for n in counts:
+            positions = np.ascontiguousarray(all_positions[:n])
+            masses = np.full(n, PLUMMER_TOTAL_MASS_MSUN / n)
+            support = SOFTENING_AT_REFERENCE_KPC * (
+                SOFTENING_REFERENCE_N / n
+            )**(1.0 / 3.0)
+            radii = np.geomspace(0.05 * PLUMMER_SCALE_KPC,
+                                 PLUMMER_TRUNCATION_KPC, ERROR_PROBE_COUNT)
+            query = np.column_stack((radii, np.zeros_like(radii), np.zeros_like(radii)))
+            truth_phi, truth_force = analytic_plummer(radii)
+            native = time_native(positions, masses, support, rmax, query)
+            agama = time_stock_agama(positions, masses, rmax, query, scratch)
+            for result in (native, agama):
+                result["potential_error"] = error_summary(result["potential_probe"], truth_phi)
+                result["force_error"] = error_summary(result["radial_force_probe"], truth_force)
+            rows.append({"n_particles": int(n),
+                         "softening_support_kpc": float(support),
+                         "native": native, "agama": agama})
 
-    pipeline_build_times = []
-    pipeline_eval_times = []
-    for _ in range(REPEATS):
-        start = perf_counter()
-        pot = construct_galaxy_potential_model(galaxy)
-        pipeline_build_times.append(perf_counter() - start)
-        start = perf_counter()
-        values = pot.potential(np.ascontiguousarray(np.asarray(galaxy["pos"], dtype=float)))
-        pipeline_eval_times.append(perf_counter() - start)
-        if not np.all(np.isfinite(values)):
-            raise RuntimeError("Non-finite pipeline potential encountered")
-        del pot
-        gc.collect()
-
-    slopes = {}
-    extrapolated_build_times = {}
-    for model in ("spherical_monopole", "axisymmetric_l4", "nonaxisymmetric_l4"):
-        rows = [row for row in n_results if row["model"] == model
-                and row["n_particles"] >= SCALING_FIT_MIN_N]
-        fit_coeff = np.polyfit(
-            np.log([row["n_particles"] for row in rows]),
-            np.log([row["build_median_s"] for row in rows]), 1)
-        slopes[model] = float(fit_coeff[0])
-        extrapolated_build_times[model] = {
-            str(n): float(np.exp(fit_coeff[1]) * n**fit_coeff[0])
-            for n in PREDICTION_COUNTS
-        }
-
-    figure_path, fitted_n_slopes, lmax_build_slope = save_scaling_figure(n_results, lmax_results)
-
+    figure, exponents = save_scaling_figure(rows)
+    radii = np.linalg.norm(all_positions, axis=1)
+    sorted_radii = np.sort(radii)
+    q = (sorted_radii / np.sqrt(sorted_radii**2 + PLUMMER_SCALE_KPC**2))**3
+    enclosed_fraction = (PLUMMER_TRUNCATION_KPC /
+                         np.sqrt(PLUMMER_TRUNCATION_KPC**2 + PLUMMER_SCALE_KPC**2))**3
+    empirical_cdf = np.arange(1, MAX_PARTICLES + 1) / MAX_PARTICLES
+    max_cdf_deviation = float(np.max(np.abs(q / enclosed_fraction - empirical_cdf)))
     print(json.dumps({
-        "sample": {"run": RUN, "snap": SNAP, "subhalo": SUBHALO,
-                   "n_dm": len(dm_pos), "n_star": len(star_pos),
-                   "n_gas": len(galaxy.g), "kernel_support_kpc": support,
-                   "gridSizeR": GRID_SIZE_R, "rmax_kpc": rmax,
-                   "repeats": REPEATS},
-        "pipeline_build_median_s": float(np.median(pipeline_build_times)),
-        "pipeline_eval_median_s": float(np.median(pipeline_eval_times)),
-        "particle_count_scaling_exponent": slopes,
-        "particle_count_scaling_exponent_plotted": fitted_n_slopes,
-        "fitted_build_time_estimates_s": extrapolated_build_times,
-        "lmax_build_scaling_exponent_plotted": lmax_build_slope,
-        "particle_count_fit_range": [SCALING_FIT_MIN_N,
-                                     max(row["n_particles"] for row in n_results)],
-        "N_above_real_sample_uses_deterministic_repeats": True,
-        "particle_count_extrapolation_limit": EXTRAPOLATE_TO_N,
-        "figure": figure_path,
-        "by_particle_count": n_results,
-        "by_lmax": lmax_results,
+        "analytic_model": {"density": "truncated Plummer sphere",
+                   "potential_inside": "-G*M0*(1/sqrt(r^2+a^2)-a^2/(Rt^2+a^2)^(3/2)); M0=Mtotal/[Rt^3/(Rt^2+a^2)^(3/2)]",
+                   "potential_outside": "-G*Mtotal/r",
+                   "scale_radius_kpc": PLUMMER_SCALE_KPC,
+                   "truncation_radius_kpc": PLUMMER_TRUNCATION_KPC,
+                   "total_mass_msun": PLUMMER_TOTAL_MASS_MSUN,
+                   "softening_rule": "h=0.2 kpc*(1000/N)^(1/3)",
+                   "sample_size": MAX_PARTICLES,
+                   "radial_cdf_max_deviation": max_cdf_deviation,
+                   "seed": 2026},
+        "sample": {"n_source_particles": MAX_PARTICLES,
+                   "gridSizeR": GRID_SIZE_R, "rmin_kpc": RMIN_KPC,
+                   "rmax_kpc": rmax,
+                   "symmetry": "spherical", "lmax": 0,
+                   "native_kernel": "compact cubic spline, support h",
+                   "error_reference": "unsoftened analytic truncated Plummer; native errors include the deliberate softening bias",
+                   "error_probe_radii_kpc": np.geomspace(
+                       0.05 * PLUMMER_SCALE_KPC, PLUMMER_TRUNCATION_KPC,
+                       ERROR_PROBE_COUNT).tolist(),
+                   "agama_kernel": "stock unsoftened particle source",
+                   "repeats_per_N_per_backend": REPEATS,
+                   "errorbar_percentiles": [16, 84]},
+        "n_sampling": "rounded geomspace from 1e5 to 1e7; nested prefixes of one independent analytic-model realization; masses renormalized to fixed total mass at each N",
+        "asymptotic_complexity_at_fixed_grid_lmax": "O(N) for both particle-source builders",
+        "measured_loglog_slope_N_gt_1e5": exponents,
+        "figure": figure,
+        "by_particle_count": rows,
     }, indent=2))
 
 
