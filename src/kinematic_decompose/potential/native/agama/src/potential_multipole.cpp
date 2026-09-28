@@ -2107,6 +2107,110 @@ shared_ptr<const Multipole> Multipole::create(const BaseDensity& src,
     return createMultipole(src, sym, lmax, mmax, gridSizeR, rmin, rmax, fixOrder);
 }
 
+namespace {
+
+// The Poisson solver samples the density at precisely these quadrature nodes.
+// Keep the fitted-density convolution on that grid, without an intervening
+// interpolation (which would alias a compact kernel narrower than a grid cell).
+class ConvolvedDensityTable: public BaseDensity {
+    const math::SphHarmIndices ind;
+    const std::vector<double>& radii;
+    const std::vector<std::vector<double> >& coefs;
+    double at(const coord::PosCyl& pos) const {
+        double r = sqrt(pow_2(pos.R) + pow_2(pos.z));
+        std::vector<double>::const_iterator it = std::lower_bound(radii.begin(), radii.end(), r);
+        size_t k = it-radii.begin();
+        if(k==radii.size() || (k>0 && fabs(radii[k-1]-r)<fabs(radii[k]-r))) --k;
+        if(fabs(radii[k]-r)>1e-9*std::max(1., r))
+            throw std::runtime_error("Convolved density queried away from Poisson quadrature nodes");
+        std::vector<double> row(ind.size(), 0.);
+        for(int m=ind.mmin(); m<=ind.mmax; m++)
+            for(int l=ind.lmin(m); l<=ind.lmax; l+=ind.step)
+                row[ind.index(l,m)] = coefs[ind.index(l,m)][k];
+        double tau = pos.z==0 ? 0 : pos.z/(r+pos.R);
+        return math::sphHarmTransformInverse(ind, &row[0], tau, pos.phi);
+    }
+public:
+    ConvolvedDensityTable(const math::SphHarmIndices& i,
+        const std::vector<double>& r, const std::vector<std::vector<double> >& c):
+        ind(i), radii(r), coefs(c) {}
+    virtual coord::SymmetryType symmetry() const { return ind.symmetry(); }
+    virtual std::string name() const { return "ConvolvedFittedDensity"; }
+    virtual void evalManyDensityCyl(size_t n, const coord::PosCyl p[],
+        double v[], double /*time*/=0) const {
+        for(size_t j=0; j<n; j++) v[j]=at(p[j]);
+    }
+protected:
+    virtual double densityCyl(const coord::PosCyl& p, double) const { return at(p); }
+    virtual double densityCar(const coord::PosCar& p, double) const { return at(coord::toPosCyl(p)); }
+    virtual double densitySph(const coord::PosSph& p, double) const { return at(coord::toPosCyl(p)); }
+};
+
+// 2pi/(r*a) integral s W(s) P_l(cos(angle)) ds; W is normalized to unit mass.
+void fittedConvolutionKernel(double r, double a, double h, int lmax, std::vector<double>& out)
+{
+    std::fill(out.begin(), out.end(), 0.);
+    if(r==0 || a==0) {
+        out[0] = 4*M_PI*softenedKernel((r+a)/h)/pow_3(h);
+        return;
+    }
+    double lo=fabs(r-a), hi=std::min(r+a,h);
+    if(hi<=lo) return;
+    const int order=20;
+    const double* x=math::GLPOINTS[order], *w=math::GLWEIGHTS[order];
+    for(int piece=0; piece<2; piece++) {
+        double left=piece==0 ? lo : std::max(lo,0.5*h);
+        double right=piece==0 ? std::min(hi,0.5*h) : hi;
+        if(right<=left) continue;
+        for(int j=0; j<order; j++) {
+            double s=left+(right-left)*x[j];
+            double mu=(r*r+a*a-s*s)/(2*r*a);
+            double weight=(right-left)*w[j]*s*softenedKernel(s/h)/pow_3(h)*2*M_PI/(r*a);
+            out[0]+=weight;
+            if(lmax>0) {
+                out[1]+=weight*mu;
+                double p0=1, p1=mu;
+                for(int l=2; l<=lmax; l++) {
+                    double p2=((2*l-1)*mu*p1-(l-1)*p0)/l;
+                    out[l]+=weight*p2;
+                    p0=p1; p1=p2;
+                }
+            }
+        }
+    }
+}
+
+// Massive particles exactly at the origin cannot enter the log-radius density
+// fit. Add their finite compact-kernel potential *exactly* at every output node.
+void addCentralKernel(double mass, double h, const std::vector<double>& radii,
+    std::vector<std::vector<double> > coefs[2])
+{
+    const int order=20;
+    for(size_t k=0; k<radii.size(); k++) {
+        double r=radii[k], inside=0, outside=0;
+        for(int piece=0; piece<2; piece++) {
+            double left=piece==0 ? 0 : 0.5*h;
+            double right=piece==0 ? 0.5*h : h;
+            for(int side=0; side<2; side++) {
+                double aa=side==0 ? left : std::max(left,r);
+                double bb=side==0 ? std::min(right,r) : right;
+                if(bb<=aa) continue;
+                for(int j=0; j<order; j++) {
+                    double s=aa+(bb-aa)*math::GLPOINTS[order][j];
+                    double w=(bb-aa)*math::GLWEIGHTS[order][j]*
+                        softenedKernel(s/h)/pow_3(h);
+                    if(side==0) inside+=w*s*s;
+                    else outside+=w*s;
+                }
+            }
+        }
+        coefs[0][0][k]-=4*M_PI*mass*(inside/r+outside);
+        coefs[1][0][k]+=4*M_PI*mass*inside/(r*r);
+    }
+}
+
+} // anonymous namespace
+
 shared_ptr<const Multipole> Multipole::createSoftened(
     const particles::ParticleArray<coord::PosCyl>& particles,
     const std::vector<double>& softening, coord::SymmetryType sym, int lmax, int mmax,
@@ -2134,11 +2238,90 @@ shared_ptr<const Multipole> Multipole::createSoftened(
     if(isZRotSymmetric(sym))
         mmax = 0;
     math::SphHarmIndices ind(lmax, mmax, sym);
-    // Integrate each compact particle kernel over its own support band and
-    // accumulate its radial moments directly onto the requested output grid.
-    // This removes source sampling on the fixed logarithmic density grid.
     std::vector< std::vector<double> > coefsPot[2];
-    computeSoftenedPotentialCoefs(particles, softening, ind, gridRadii, coefsPot);
+    if(softening.size()!=1) {
+        // Distinct h_i cannot be convolved with one common fitted source.
+        // Preserve the existing exact per-particle support-band integration.
+        computeSoftenedPotentialCoefs(particles, softening, ind, gridRadii, coefsPot);
+    } else {
+        const double h=softening[0];
+        particles::ParticleArray<coord::PosCyl> noncentral;
+        double centralMass=0;
+        size_t noncentralMassive=0;
+        for(size_t i=0; i<particles.size(); i++) {
+            const coord::PosCyl& p=particles.point(i);
+            if(p.R==0 && p.z==0 && particles.mass(i)<0)
+                throw std::invalid_argument("Negative-mass particles at r=0 cannot enter the fitted density");
+            if(p.R==0 && p.z==0 && particles.mass(i)>0)
+                centralMass+=particles.mass(i);
+            else {
+                noncentral.add(p,particles.mass(i));
+                if(particles.mass(i)>0) noncentralMassive++;
+            }
+        }
+        // A fitted source is not reliable when there are too few particles
+        // for the requested radial/harmonic degrees of freedom. In particular,
+        // sparse gas can have a smooth potential but a wildly inaccurate
+        // *force* after fitting. Require ten particles per radial node and
+        // retained harmonic coefficient; use the exact particle-kernel route
+        // for undersampled sources instead of silently changing their model.
+        size_t activeCoefs=0;
+        for(int m=ind.mmin(); m<=ind.mmax; m++)
+            for(int l=ind.lmin(m); l<=ind.lmax; l+=ind.step)
+                activeCoefs++;
+        if(noncentralMassive < 10 * gridRadii.size() * activeCoefs) {
+            computeSoftenedPotentialCoefs(particles,softening,ind,gridRadii,coefsPot);
+            return shared_ptr<const Multipole>(new Multipole(gridRadii,coefsPot[0],coefsPot[1]));
+        }
+        coefsPot[0].assign(ind.size(), std::vector<double>(gridRadii.size(),0.));
+        coefsPot[1]=coefsPot[0];
+        if(noncentralMassive>0) {
+            std::vector<std::vector<double> > fittedCoefs;
+            computeDensityCoefsFromParticles(noncentral,ind,gridRadii,fittedCoefs,1.);
+            DensitySphericalHarmonic fitted(gridRadii,fittedCoefs);
+            std::vector<double> nodes;
+            for(size_t k=0; k<=gridRadii.size(); k++) {
+                double left=k ? gridRadii[k-1] : 0.;
+                for(size_t j=0; j<GLORDER_RAD; j++)
+                    nodes.push_back(k<gridRadii.size() ?
+                        left+(gridRadii[k]-left)*math::GLPOINTS[GLORDER_RAD][j] :
+                        gridRadii.back()/math::GLPOINTS[GLORDER_RAD][j]);
+            }
+            std::sort(nodes.begin(),nodes.end());
+            std::vector<std::vector<double> > conv(ind.size(),
+                std::vector<double>(nodes.size(),0.));
+            std::vector<double> kern(lmax+1), source(ind.size(),0.);
+            for(size_t ni=0; ni<nodes.size(); ni++) {
+                double r=nodes[ni], lo=std::max(0.,r-h), hi=r+h;
+                std::vector<double> cuts;
+                cuts.push_back(lo); cuts.push_back(hi);
+                for(size_t k=0; k<gridRadii.size(); k++)
+                    if(gridRadii[k]>lo && gridRadii[k]<hi) cuts.push_back(gridRadii[k]);
+                const double breaks[]={fabs(r-0.5*h),r+0.5*h,fabs(r-h),r};
+                for(size_t k=0; k<4; k++)
+                    if(breaks[k]>lo && breaks[k]<hi) cuts.push_back(breaks[k]);
+                std::sort(cuts.begin(),cuts.end());
+                for(size_t panel=1; panel<cuts.size(); panel++) {
+                    double width=cuts[panel]-cuts[panel-1];
+                    if(width<=0) continue;
+                    for(int j=0; j<20; j++) {
+                        double a=cuts[panel-1]+width*math::GLPOINTS[20][j];
+                        fittedConvolutionKernel(r,a,h,lmax,kern);
+                        fitted.getCoefsAtRadius(a,&source[0]);
+                        double weight=a*a*width*math::GLWEIGHTS[20][j];
+                        for(int m=ind.mmin(); m<=ind.mmax; m++)
+                            for(int l=ind.lmin(m); l<=ind.lmax; l+=ind.step) {
+                                unsigned int c=ind.index(l,m);
+                                conv[c][ni]+=weight*kern[l]*source[c];
+                            }
+                    }
+                }
+            }
+            ConvolvedDensityTable density(ind,nodes,conv);
+            computePotentialCoefsFromSource(density,ind,gridRadii,coefsPot);
+        }
+        if(centralMass!=0) addCentralKernel(centralMass,h,gridRadii,coefsPot);
+    }
     return shared_ptr<const Multipole>(new Multipole(gridRadii, coefsPot[0], coefsPot[1]));
 }
 
