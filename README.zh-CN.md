@@ -264,6 +264,14 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 
 所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：衬线 Times New Roman + STIX 数学字体、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
 
+## 引力势构建基准测试
+
+解析截断 Plummer 基准可分别用 `uv run --no-sync python tests/example_potential_performance.py` 和 `uv run --no-sync python tests/example_potential_grid_convergence.py` 复现；脚本生成[粒子数缩放图](images/potential_performance_scaling.png)和[径向网格收敛图](images/potential_grid_convergence.png)。
+
+缩放测试使用 $10^5$ 至 $10^7$ 的 13 个对数粒子数，每个粒子数重复构建 9 次。Native 使用 $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$，stock Agama 不使用 softening。有限区间内测得的 log-log 斜率分别为 0.91656（Native）和 0.94223（Agama），不代表渐近复杂度。误差相对于未软化 Plummer 解析场计算，因此 Native 的误差包含其有意引入的软化差异。
+
+网格测试固定同一组 $N=10^6$ 粒子，扫描 `gridSizeR` = 15、30、60、120、240。收敛变化以最高测试网格为参照，并非精确连续解；误差图则使用与方法相匹配的解析目标。`gridSizeR=120` 到 240 时，Agama 径向力变化的第 95 百分位为 $6.53\times10^{-3}$，因此力误差尾部尚未完全收敛。
+
 ## 测试
 
 ```bash

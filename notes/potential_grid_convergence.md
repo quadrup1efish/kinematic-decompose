@@ -1,9 +1,0 @@
-# Reading notes: radial-grid convergence and error figure
-
-Both titleless panels have equal dimensions and use the same fixed $N=10^6$ realization. The left panel shows the median relative change in potential or radial force at a given `gridSizeR` against the finest tested grid, `gridSizeR=240`; this is a numerical self-convergence diagnostic, not an exact continuum reference. The right panel shows median errors against method-matched analytic targets: Native uses the analytically convolved Plummer field for the production cubic-spline kernel, while stock Agama uses the unsoftened Plummer field.
-
-Potential values are stable between `gridSizeR=120` and 240: their median field changes are below $6.1\times10^{-7}$ and their P95 changes below $2.6\times10^{-6}$. Median radial-force changes are $8.4\times10^{-5}$ (Native) and $1.19\times10^{-4}$ (Agama), but the P95 is broader for Agama ($6.53\times10^{-3}$) than Native ($6.72\times10^{-4}$). Treat the force tail as not fully grid-converged for Agama at the finest pair tested.
-
-At the finest grid, median analytic radial-force errors are about 0.14%, while the P95 is about 3.3–3.6% and the maximum about 4.4–5.4%. The tail is concentrated in the innermost probes ($r\sim0.05$–0.1 kpc), where this single finite-N realization has the largest radial-sampling sensitivity. Increasing `gridSizeR` does not eliminate this fixed-sample contribution. The reported P95 and maxima are in `data_truth/potential_grid_convergence.md`; the script can reproduce the full numeric output.
-
-The Native analytic reference is an independent quadrature of the smooth Plummer field convolved with the same normalized kernel; it separates discretization/sampling residuals from the deliberate softening bias. The separate `unsoftened_model_error` field in the JSON reports total Native deviation from the unsoftened Plummer model. This is one fixed sample, not an ensemble over random realizations.
