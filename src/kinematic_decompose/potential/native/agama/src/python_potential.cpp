@@ -343,11 +343,17 @@ PtrPotential makeMultipole(
     const size_t n = static_cast<size_t>(p.shape[0]);
     const double* pp = static_cast<const double*>(p.ptr);
     const double* mm = static_cast<const double*>(m.ptr);
+    // Parse only supported phi-independent requests here. Leave unsupported
+    // requests at the original validation point to preserve error priority.
+    const char symcode = symmetry.empty() ? '\0' : std::tolower(symmetry[0]);
+    const bool knownAxisym = symcode=='s' || symcode=='a';
+    const coord::SymmetryType requestedSym = knownAxisym ? parseSymmetry(symmetry) : coord::ST_NONE;
     particles::ParticleArray<coord::PosCyl> particles;
+    particles.data.reserve(n);
     for(size_t i=0; i<n; ++i) {
         const double x=pp[3*i], y=pp[3*i+1], z=pp[3*i+2];
         particles.add(coord::PosCyl(std::hypot(x,y)*lengthUnit, z*lengthUnit,
-            std::atan2(y,x)), mm[i]*massUnit);
+            knownAxisym ? 0. : std::atan2(y,x)), mm[i]*massUnit);
     }
     std::vector<double> eps;
     if(!softening.is_none()) {
@@ -362,10 +368,10 @@ PtrPotential makeMultipole(
                 throw std::invalid_argument("softening values must be finite and positive");
             value *= lengthUnit;
         }
-        return potential::Multipole::createSoftened(particles, eps, parseSymmetry(symmetry),
+        return potential::Multipole::createSoftened(particles, eps, knownAxisym ? requestedSym : parseSymmetry(symmetry),
             lmax, mmax, gridSizeR, rmin*lengthUnit, rmax*lengthUnit);
     }
-    return potential::Multipole::create(particles, parseSymmetry(symmetry), lmax, mmax,
+    return potential::Multipole::create(particles, knownAxisym ? requestedSym : parseSymmetry(symmetry), lmax, mmax,
         gridSizeR, rmin*lengthUnit, rmax*lengthUnit);
 }
 

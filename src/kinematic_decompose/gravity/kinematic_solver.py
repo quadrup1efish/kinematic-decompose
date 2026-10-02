@@ -63,7 +63,19 @@ def create_multipole_potential(
         gridsizeR: Number of radial grid points (default: 40)
         export: Whether to export potential to file (default: False)
         filename: Output filename if export=True (default: auto-generated)
-    
+
+    Notes:
+        A scalar support radius uses fitted-density convolution when the native
+        backend has enough noncentral positive-mass particles; sparse sources
+        retain per-particle kernel integration. The threshold is 10*K*H, where
+        K is the radial node count and H the active harmonic channel count
+        (900 particles for K=30, symmetry='a', lmax=4).
+        Direct ``Potential`` calls with a per-particle support array always use
+        kernel integration, even when every array entry is equal. These
+        approximations need not be identical.
+        Requested radial endpoints may expand to include the kernel support.
+        Symmetry 'a' also imposes plane-reflection symmetry.
+
     Returns:
         Potential: Potential object for gravity calculations
     

@@ -155,11 +155,11 @@ inline int bsplineDerivs(const double x, const double grid[], int size, double B
     return ind;
 }
 
-/// similar to bsplineDerivs, but uses linear extrapolation outside the grid domain
+/// Evaluate values/extrapolation using an already located grid interval.
 template<int N>
-inline int bsplineValuesExtrapolated(const double x, const double grid[], int size, double B[])
+inline int bsplineValuesExtrapolatedAtIndex(const double x, int ind,
+    const double grid[], int size, double B[])
 {
-    int ind = binSearch(x, grid, size);
     if(ind>=0 && ind<size-1) {
         bsplineValues<N>(x, ind, grid, size, B);
         return ind;
@@ -176,6 +176,13 @@ inline int bsplineValuesExtrapolated(const double x, const double grid[], int si
     return ind;
 }
 
+/// similar to bsplineDerivs, but uses linear extrapolation outside the grid domain
+template<int N>
+inline int bsplineValuesExtrapolated(const double x, const double grid[], int size, double B[])
+{
+    return bsplineValuesExtrapolatedAtIndex<N>(x, binSearch(x, grid, size), grid, size, B);
+}
+
 /** A modified B-spline basis of degree N=3 and boundary conditions of a natural cubic spline
     (i.e., the second derivative is zero at endpoints).
     The number of basis functions is exactly "size", i.e. less by two than the number of cubic B-splines:
@@ -184,12 +191,11 @@ inline int bsplineValuesExtrapolated(const double x, const double grid[], int si
     where dx_1 = grid[1]-grid[0], dx_2 = grid[2]-grid[0],
     and the other functions are untouched but shifted by one, except the last three which are modified
     in the same way.
-    \param[in]  fnc  is a function that computes the values or derivatives of ordinary degree 3 B-splines;
-    other arguments are the same as for the above functions
+    \param[in]  ind  is the first column index of already evaluated ordinary cubic B-splines;
+    the same transformation applies to values and derivatives.
 */
-inline int bsplineNaturalCubic(BsplineFnc fnc, const double x, const double grid[], int size, double B[])
+inline int transformNaturalCubicBasis(int ind, const double grid[], int size, double B[])
 {
-    int ind = fnc(x, grid, size, B);
     assert(size>=2);
     if(size==2) {
         // general expressions for transforming four degree 3 B-spline functions (or their derivatives)
@@ -226,11 +232,87 @@ inline int bsplineNaturalCubic(BsplineFnc fnc, const double x, const double grid
     return std::max(0, ind-1);
 }
 
+inline int bsplineNaturalCubic(BsplineFnc fnc, const double x, const double grid[], int size, double B[])
+{
+    return transformNaturalCubicBasis(fnc(x, grid, size, B), grid, size, B);
+}
+
 /// shorthand for the above function in the case of computing basis function values (with extrapolation)
 inline int bsplineNaturalCubicValues(const double x, const double grid[], int size, double B[])
 {
     return bsplineNaturalCubic(bsplineValuesExtrapolated<3>, x, grid, size, B);
 }
+
+/// Cache the grid-only operands of de Boor's recurrence per interval.
+/// Preserve the original arithmetic order (including divisions) exactly.
+/// Boundary modifications and extrapolation retain the original implementation.
+class CachedNaturalCubicValues {
+    enum {
+        DEGREE = 3,
+        NUM_VALUES = DEGREE + 1,
+        NUM_OPERANDS = 4,
+        TERMS_PER_INTERVAL = DEGREE * (DEGREE + 3) / 2,
+        STRIDE = NUM_OPERANDS * TERMS_PER_INTERVAL
+    };
+    const std::vector<double>& grid;
+    std::vector<double> operands;
+public:
+    explicit CachedNaturalCubicValues(const std::vector<double>& nodes) :
+        grid(nodes), operands(nodes.size() * STRIDE, 0.)
+    {
+        const int size = grid.size();
+        for(int ind=DEGREE; ind<size-NUM_VALUES; ind++) {
+            size_t offset = static_cast<size_t>(ind) * STRIDE;
+            for(int degree=1; degree<=DEGREE; degree++) {
+                for(int j=ind; j>=ind-degree; j--) {
+                    operands[offset++] = grid[j];
+                    operands[offset++] = grid[j+degree] - grid[j];
+                    operands[offset++] = grid[j+degree+1];
+                    operands[offset++] = grid[j+1] - grid[j+degree+1];
+                }
+            }
+        }
+    }
+
+    int eval(const double x, double values[]) const
+    {
+        const int size = grid.size();
+        const int ind = binSearch(x, &grid[0], size);
+        if(ind<DEGREE || ind>=size-NUM_VALUES) {
+            const int first = bsplineValuesExtrapolatedAtIndex<DEGREE>(x, ind, &grid[0], size, values);
+            return transformNaturalCubicBasis(first, &grid[0], size, values);
+        }
+        values[0] = values[1] = values[2] = 0.;
+        values[3] = 1.;
+        const double* p = &operands[static_cast<size_t>(ind) * STRIDE];
+        for(int degree=1; degree<=DEGREE; degree++) {
+            double previous = 0.;
+            for(int i=DEGREE; i>=DEGREE-degree; i--, p+=NUM_OPERANDS) {
+                const double current = values[i];
+                values[i] = current * ((x-p[0])/p[1]) + previous * ((x-p[2])/p[3]);
+                previous = current;
+            }
+        }
+        return ind-1;
+    }
+};
+
+/// Select sample evaluation at compile time; linear fits need no cubic cache.
+template<int N> class SplineSampleBasis;
+
+template<> class SplineSampleBasis<1> {
+    const std::vector<double>& grid;
+public:
+    explicit SplineSampleBasis(const std::vector<double>& nodes) : grid(nodes) {}
+    int eval(double x, double values[]) const {
+        return bsplineValuesExtrapolated<1>(x, &grid[0], grid.size(), values);
+    }
+};
+
+template<> class SplineSampleBasis<3> : public CachedNaturalCubicValues {
+public:
+    explicit SplineSampleBasis(const std::vector<double>& nodes) : CachedNaturalCubicValues(nodes) {}
+};
 
 /// shorthand for the D-th derivative of natural cubic B-spline functions
 template<int D>
@@ -3168,7 +3250,6 @@ public:
     double sumWeights;
 private:
     const std::vector<double> knots;   ///< b-spline knots  X[k], k=0..numKnots-1
-    const std::vector<double> xvalues; ///< x[i], i=0..numDataPoints-1
     const std::vector<double> weights; ///< w[i], i=0..numDataPoints-1
 
     /// sparse matrix  B  containing the values of each basis function at each data point:
@@ -3216,6 +3297,13 @@ public:
     void solveForAmplitudesWithEDF(const std::vector<double>& yvalues, double EDF,
         std::vector<double>& ampl, double& RSS) const;
 
+    /// The EDF-to-lambda mapping depends only on this fitter's fixed singular values.
+    double lambdaForEDF(double EDF) const;
+
+    /// Fit a new data vector using an already prepared smoothing parameter.
+    void solveForAmplitudesWithLambda(const std::vector<double>& yvalues, double lambda,
+        std::vector<double>& ampl, double& RSS) const;
+
     /** find the amplitudes of basis functions that provide the best fit to the data points `y`
         with the logarithm of the generalized cross-validation score (GCV) being larger
         than its minimum value (corresponding to the case of optimal smoothing) by deltaSmoothing.
@@ -3253,7 +3341,6 @@ SplineApprox::Impl::Impl(const std::vector<double> &_knots,
     numKnots(_knots.size()),
     numDataPoints(_xvalues.size()),
     knots(_knots),
-    xvalues(_xvalues),
     weights(_weights),
     BMatrix(numDataPoints, numKnots)
 {
@@ -3276,14 +3363,16 @@ SplineApprox::Impl::Impl(const std::vector<double> &_knots,
     }
     checkFiniteAndMonotonic(knots, "splineApprox", "x");
 
+    // Coordinates are only needed during construction; the owned basis stores their effect.
     // initialize b-spline matrix B
+    const CachedNaturalCubicValues cachedBasis(knots);
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
     for(ptrdiff_t i=0; i<numDataPoints; i++) {
         // for each input point, at most 4 basis functions are non-zero, starting from index 'ind'
         double Bspl[4];
-        int ind = bsplineNaturalCubicValues(xvalues[i], &knots[0], numKnots, Bspl);
+        int ind = cachedBasis.eval(_xvalues[i], Bspl);
         assert(ind>=0 && ind<=(int)numKnots-2);
         BMatrix.assignRow(i, ind, Bspl);
     }
@@ -3453,8 +3542,7 @@ void SplineApprox::Impl::computeAmplitudes(const FitData &fitData, double lambda
     blas_dgemv(CblasNoTrans, 1, AMatrix, ampl, 0, result);
 }
 
-void SplineApprox::Impl::solveForAmplitudesWithEDF(const std::vector<double> &yvalues, double EDF,
-    std::vector<double> &ampl, double &RSS) const
+double SplineApprox::Impl::lambdaForEDF(double EDF) const
 {
     if(EDF==0)
         EDF = numKnots;
@@ -3462,7 +3550,20 @@ void SplineApprox::Impl::solveForAmplitudesWithEDF(const std::vector<double> &yv
         throw std::invalid_argument("SplineApprox: incorrect number of equivalent degrees of freedom "
             "(requested "+utils::toString(EDF)+", valid range is 2-"+utils::toString(numKnots)+")");
     // find root using a log-scaling for lambda
-    double lambda = findRoot(SplineEDFRootFinder(singValues, EDF), ScalingSemiInf(), EPS_LAMBDA);
+    return findRoot(SplineEDFRootFinder(singValues, EDF), ScalingSemiInf(), EPS_LAMBDA);
+}
+
+void SplineApprox::Impl::solveForAmplitudesWithEDF(const std::vector<double> &yvalues, double EDF,
+    std::vector<double> &ampl, double &RSS) const
+{
+    const double lambda = lambdaForEDF(EDF);
+    computeAmplitudes(initFit(yvalues), lambda, ampl, RSS, EDF);
+}
+
+void SplineApprox::Impl::solveForAmplitudesWithLambda(const std::vector<double>& yvalues, double lambda,
+    std::vector<double>& ampl, double& RSS) const
+{
+    double EDF;
     computeAmplitudes(initFit(yvalues), lambda, ampl, RSS, EDF);
 }
 
@@ -3515,6 +3616,24 @@ std::vector<double> SplineApprox::fit(
     std::vector<double> ampl;
     double RSS;
     impl->solveForAmplitudesWithEDF(yvalues, edf, ampl, RSS);
+    if(rms)
+        *rms = sqrt(RSS / impl->sumWeights);
+    return ampl;
+}
+
+SplineApprox::PreparedEDF SplineApprox::prepareEDF(const double edf) const
+{
+    return PreparedEDF(this, impl->lambdaForEDF(edf));
+}
+
+std::vector<double> SplineApprox::fit(const std::vector<double>& yvalues,
+    const PreparedEDF& prepared, double* rms) const
+{
+    if(prepared.source != this)
+        throw std::invalid_argument("SplineApprox: EDF preparation belongs to another fitter");
+    std::vector<double> ampl;
+    double RSS;
+    impl->solveForAmplitudesWithLambda(yvalues, prepared.lambda, ampl, RSS);
     if(rms)
         *rms = sqrt(RSS / impl->sumWeights);
     return ampl;
@@ -3780,6 +3899,7 @@ SplineLogDensityFitter<N>::SplineLogDensityFitter(
     // compute the values of all nontrivial basis functions for each point,
     // multiplied by the point weight, and store them in this matrix
     SparseMatrixSpecial<N+1> Bmatrix(numData, numAmpl);
+    const SplineSampleBasis<N> sampleBasis(grid);
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
@@ -3791,9 +3911,7 @@ SplineLogDensityFitter<N>::SplineLogDensityFitter(
             !isFinite(xval) || weight == 0)
             continue;
         double Bspl[N+1];
-        int ind = N==1 ?
-            bsplineValuesExtrapolated<1>(xval, &grid[0], numNodes, Bspl) :
-            bsplineNaturalCubicValues   (xval, &grid[0], numNodes, Bspl);
+        int ind = sampleBasis.eval(xval, Bspl);
         for(int b=0; b<=N; b++)
             Bspl[b] *= weight;
         Bmatrix.assignRow(p, ind, Bspl);

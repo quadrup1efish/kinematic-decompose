@@ -1045,17 +1045,27 @@ void computeDensityCoefsFromParticles(
     std::string errorMsg;
     utils::CtrlBreakHandler cbrk;  // catch Ctrl-Break keypress
     bool stop = false;
+    if(nonzeroCoefsSize>0) {
+        try {
+            // All channels use the same fitter and EDF; prepare their common lambda once.
+            const math::SplineApprox::PreparedEDF prepared = fitter.prepareEDF(edf);
 #ifdef _OPENMP
 #pragma omp parallel for schedule(static)
 #endif
-    for(int h=0; h<nonzeroCoefsSize; h++) {
-        if(stop) continue;
-        if(cbrk.triggered()) stop = true;
-        try{
-            math::CubicSpline splc(gridLogRadii, fitter.fit(harmonics[nonzeroCoefs[h]], edf));
-            // multiply the coefs by the value of the l=0 term (which is the spherical density estimate)
-            for(unsigned int k=0; k<gridSizeR; k++)
-                coefs[nonzeroCoefs[h]][k] = splc(gridLogRadii[k]) * coefs[0][k];
+            for(int h=0; h<nonzeroCoefsSize; h++) {
+                if(stop) continue;
+                if(cbrk.triggered()) stop = true;
+                try{
+                    math::CubicSpline splc(gridLogRadii, fitter.fit(harmonics[nonzeroCoefs[h]], prepared));
+                    // multiply the coefs by the value of the l=0 term (which is the spherical density estimate)
+                    for(unsigned int k=0; k<gridSizeR; k++)
+                        coefs[nonzeroCoefs[h]][k] = splc(gridLogRadii[k]) * coefs[0][k];
+                }
+                catch(std::exception& e) {
+                    errorMsg = e.what();
+                    stop = true;
+                }
+            }
         }
         catch(std::exception& e) {
             errorMsg = e.what();
@@ -2228,10 +2238,8 @@ shared_ptr<const Multipole> Multipole::createSoftened(
         else
             throw std::invalid_argument("Multipole: symmetry is not specified");
     }
-    std::vector<double> expandedSoftening(particles.size());
-    for(size_t i=0; i<particles.size(); i++)
-        expandedSoftening[i] = softening.size()==1 ? softening[0] : softening[i];
-    chooseGridRadiiSoftened(particles, expandedSoftening, gridSizeR, rmin, rmax);
+    // The grid chooser already handles scalar or per-particle support radii.
+    chooseGridRadiiSoftened(particles, softening, gridSizeR, rmin, rmax);
     std::vector<double> gridRadii = math::createExpGrid(gridSizeR, rmin, rmax);
     if(isSpherical(sym))
         lmax = 0;
@@ -2254,10 +2262,8 @@ shared_ptr<const Multipole> Multipole::createSoftened(
                 throw std::invalid_argument("Negative-mass particles at r=0 cannot enter the fitted density");
             if(p.R==0 && p.z==0 && particles.mass(i)>0)
                 centralMass+=particles.mass(i);
-            else {
-                noncentral.add(p,particles.mass(i));
-                if(particles.mass(i)>0) noncentralMassive++;
-            }
+            else if(particles.mass(i)>0)
+                noncentralMassive++;
         }
         // A fitted source is not reliable when there are too few particles
         // for the requested radial/harmonic degrees of freedom. In particular,
@@ -2273,11 +2279,21 @@ shared_ptr<const Multipole> Multipole::createSoftened(
             computeSoftenedPotentialCoefs(particles,softening,ind,gridRadii,coefsPot);
             return shared_ptr<const Multipole>(new Multipole(gridRadii,coefsPot[0],coefsPot[1]));
         }
+        // Most snapshots have no positive central particle: fit the original
+        // immutable array directly. Zero-mass central particles remain present.
+        if(centralMass!=0)
+            for(size_t i=0; i<particles.size(); i++) {
+                const coord::PosCyl& p=particles.point(i);
+                if(!(p.R==0 && p.z==0 && particles.mass(i)>0))
+                    noncentral.add(p,particles.mass(i));
+            }
+        const particles::ParticleArray<coord::PosCyl>& fitParticles =
+            centralMass!=0 ? noncentral : particles;
         coefsPot[0].assign(ind.size(), std::vector<double>(gridRadii.size(),0.));
         coefsPot[1]=coefsPot[0];
         if(noncentralMassive>0) {
             std::vector<std::vector<double> > fittedCoefs;
-            computeDensityCoefsFromParticles(noncentral,ind,gridRadii,fittedCoefs,1.);
+            computeDensityCoefsFromParticles(fitParticles,ind,gridRadii,fittedCoefs,1.);
             DensitySphericalHarmonic fitted(gridRadii,fittedCoefs);
             std::vector<double> nodes;
             for(size_t k=0; k<=gridRadii.size(); k++) {

@@ -1291,6 +1291,28 @@ public:
         const double edf=0,
         double *rmserror=NULL) const;
 
+    /** Immutable preparation for repeated fits with the same EDF.
+        The originating SplineApprox must remain alive, and this value may only be
+        passed back to that instance. It owns no data and allocates no storage.
+    */
+    class PreparedEDF {
+        friend class SplineApprox;
+        const SplineApprox* const source;
+        const double lambda;
+        PreparedEDF(const SplineApprox* fitter, double smoothing) : source(fitter), lambda(smoothing) {}
+    };
+
+    /** Validate EDF and determine its smoothing parameter once, without using y values.
+        Does not change the fitter; the returned preparation may be shared by concurrent fits.
+    */
+    PreparedEDF prepareEDF(const double edf=0) const;
+
+    /** Fit using a preparation from this instance; other arguments match fit(yvalues, edf). */
+    std::vector<double> fit(
+        const std::vector<double>& yvalues,
+        const PreparedEDF& prepared,
+        double* rmserror=NULL) const;
+
     /** perform fitting with adaptive choice of smoothing parameter that minimizes
         the generalized cross-validation score (GCV), defined as
           GCV = (rmserror^2 * numDataPoints) / (numDataPoints-EDF)^2 .

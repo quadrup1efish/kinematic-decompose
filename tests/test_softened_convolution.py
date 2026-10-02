@@ -41,3 +41,43 @@ def test_fitted_convolution_retains_mass_at_origin():
     # separately interpolated components is not exactly additive off-grid.
     np.testing.assert_allclose(combined.force(points) - other.force(points),
                                central.force(points), rtol=5e-5, atol=1e-12)
+
+
+def test_uniform_support_array_does_not_select_fitted_convolution():
+    """Representation is part of the numerical contract above the fit threshold."""
+    rng = np.random.default_rng(1002)
+    positions = rng.normal(size=(1600, 3)) * [1.7, 0.8, 0.5]
+    masses = rng.uniform(0.5, 1.5, len(positions))
+    queries = rng.normal(size=(40, 3))
+    scalar = _build(positions, masses, 0.8)
+    per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+    for method in ("potential", "force"):
+        a = getattr(scalar, method)(queries)
+        b = getattr(per_particle, method)(queries)
+        assert np.isfinite(a).all() and np.isfinite(b).all()
+        assert a.tobytes() != b.tobytes()
+
+
+def test_fitted_source_threshold_counts_positive_noncentral_particles():
+    """For this grid/order, 899 particles fall back; the 900th selects fitting."""
+    rng = np.random.default_rng(1003)
+    positions = rng.normal(size=(900, 3)) * [1.7, 0.8, 0.5]
+    masses = np.ones(len(positions))
+    queries = rng.normal(size=(40, 3))
+    for last_mass, fitted in ((0.0, False), (1e-12, True)):
+        masses[-1] = last_mass
+        scalar = _build(positions, masses, 0.8)
+        per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+        for method in ("potential", "force"):
+            a = getattr(scalar, method)(queries)
+            b = getattr(per_particle, method)(queries)
+            assert np.isfinite(a).all() and np.isfinite(b).all()
+            assert (a.tobytes() != b.tobytes()) == fitted
+
+    # A massive central particle must not count toward the noncentral threshold.
+    positions[-1] = 0.0
+    masses[-1] = 1.0
+    scalar = _build(positions, masses, 0.8)
+    per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+    assert scalar.potential(queries).tobytes() == per_particle.potential(queries).tobytes()
+    assert scalar.force(queries).tobytes() == per_particle.force(queries).tobytes()
