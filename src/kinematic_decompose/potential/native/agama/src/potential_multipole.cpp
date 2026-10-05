@@ -976,6 +976,8 @@ void computeDensityCoefsSph(const math::IFunctionNdim& src,
     \param[in] smoothing is the amount of smoothing applied in penalized spline fitting procedure.
     \param[out] coefs will contain the arrays of computed sph.-harm. coefficients that are
     passed to the constructor of `DensitySphericalHarmonic` class; will be resized as needed.
+    \param[out] logDensityAndRatios optionally retains the original fit if a monopole
+    node underflows; empty when the ordinary representation loses no positive node.
     \note OpenMP-parallelized loop over expansion coefficients (penalized spline fitting),
     and also used parallelized loop over particles in computeSphericalHarmonicsFromParticles().
 */
@@ -984,7 +986,8 @@ void computeDensityCoefsFromParticles(
     const math::SphHarmIndices &ind,
     const std::vector<double> &gridRadii,
     std::vector< std::vector<double> > &coefs,
-    double smoothing)
+    double smoothing,
+    std::vector< std::vector<double> >* logDensityAndRatios = NULL)
 {
     unsigned int gridSizeR = gridRadii.size();
 
@@ -1012,8 +1015,27 @@ void computeDensityCoefsFromParticles(
     math::CubicSpline spl0(gridLogRadii, math::splineLogDensity<3>(
         gridLogRadii, particleRadii, /*weights*/harmonics[0],
         math::FitOptions(math::FO_INFINITE_LEFT | math::FO_INFINITE_RIGHT | math::FO_PENALTY_3RD_DERIV)));
-    for(unsigned int k=0; k<gridSizeR; k++)
-        coefs[0][k] = exp(spl0(gridLogRadii[k])) / (4*M_PI*pow_3(gridRadii[k]));
+    std::vector<double> fittedLogValues(gridSizeR);
+    bool lostMonopole = false;
+    for(unsigned int k=0; k<gridSizeR; k++) {
+        fittedLogValues[k] = spl0(gridLogRadii[k]);
+        coefs[0][k] = exp(fittedLogValues[k]) / (4*M_PI*pow_3(gridRadii[k]));
+        lostMonopole |= coefs[0][k] == 0;
+    }
+    // Keep the legacy arithmetic and representation unless underflow lost a node.
+    // Preserve the log fit before exponentiation and the higher fits before scaling.
+    if(logDensityAndRatios) {
+        logDensityAndRatios->clear();
+        if(lostMonopole) {
+            logDensityAndRatios->assign(ind.size(), std::vector<double>(gridSizeR, 0.));
+            for(unsigned int k=0; k<gridSizeR; k++) {
+                if(!isFinite(fittedLogValues[k]))
+                    throw std::domain_error("Multipole particle fit: nonfinite log-density node");
+                (*logDensityAndRatios)[0][k] =
+                    fittedLogValues[k] - log(4*M_PI) - 3*gridLogRadii[k];
+            }
+        }
+    }
     if(utils::verbosityLevel >= utils::VL_DEBUG) {
         double innerSlope, outerSlope;
         spl0.evalDeriv(gridLogRadii.front(), NULL, &innerSlope);
@@ -1058,8 +1080,12 @@ void computeDensityCoefsFromParticles(
                 try{
                     math::CubicSpline splc(gridLogRadii, fitter.fit(harmonics[nonzeroCoefs[h]], prepared));
                     // multiply the coefs by the value of the l=0 term (which is the spherical density estimate)
-                    for(unsigned int k=0; k<gridSizeR; k++)
-                        coefs[nonzeroCoefs[h]][k] = splc(gridLogRadii[k]) * coefs[0][k];
+                    for(unsigned int k=0; k<gridSizeR; k++) {
+                        double ratio = splc(gridLogRadii[k]);
+                        coefs[nonzeroCoefs[h]][k] = ratio * coefs[0][k];
+                        if(logDensityAndRatios && !logDensityAndRatios->empty())
+                            (*logDensityAndRatios)[nonzeroCoefs[h]][k] = ratio;
+                    }
                 }
                 catch(std::exception& e) {
                     errorMsg = e.what();
@@ -1848,10 +1874,14 @@ shared_ptr<const DensitySphericalHarmonic> DensitySphericalHarmonic::create(
         lmax = 0;
     if(isZRotSymmetric(sym))
         mmax = 0;
-    std::vector<std::vector<double> > coefs;
-    computeDensityCoefsFromParticles(particles,
-        math::SphHarmIndices(lmax, mmax, sym), gridRadii, coefs, smoothing);
-    return shared_ptr<const DensitySphericalHarmonic>(new DensitySphericalHarmonic(gridRadii, coefs));
+    std::vector<std::vector<double> > coefs, logDensityAndRatios;
+    math::SphHarmIndices ind(lmax, mmax, sym);
+    computeDensityCoefsFromParticles(particles, ind, gridRadii, coefs, smoothing,
+        &logDensityAndRatios);
+    shared_ptr<const DensitySphericalHarmonic> density(new DensitySphericalHarmonic(gridRadii, coefs));
+    if(!logDensityAndRatios.empty() && !density->hasFiniteMassTails())
+        density.reset(new DensitySphericalHarmonic(gridRadii, logDensityAndRatios, ind));
+    return density;
 }
 
 // the actual constructor
@@ -1860,7 +1890,7 @@ DensitySphericalHarmonic::DensitySphericalHarmonic(const std::vector<double> &_g
     BaseDensity(),
     gridRadii(_gridRadii),
     ind(getIndicesFromCoefs(coefs)),
-    logScaling(true)
+    logScaling(true), fittedLogRepresentation(false)
 {
     unsigned int gridSizeR = gridRadii.size();
     if(coefs.size() != ind.size() || gridSizeR < MULTIPOLE_MIN_GRID_SIZE)
@@ -1958,6 +1988,50 @@ DensitySphericalHarmonic::DensitySphericalHarmonic(const std::vector<double> &_g
     }
 }
 
+DensitySphericalHarmonic::DensitySphericalHarmonic(const std::vector<double>& radii,
+    const std::vector< std::vector<double> >& logDensityAndRatios,
+    const math::SphHarmIndices& indices):
+    BaseDensity(), gridRadii(radii), ind(indices), centralValue(0),
+    logScaling(true), fittedLogRepresentation(true)
+{
+    if(gridRadii.size() < MULTIPOLE_MIN_GRID_SIZE || logDensityAndRatios.size() != ind.size())
+        throw std::invalid_argument("Multipole particle fit: invalid log-density representation size");
+    std::vector<double> gridLogR(gridRadii.size());
+    for(size_t k=0; k<gridRadii.size(); k++) {
+        if(!(gridRadii[k]>0) || !isFinite(gridRadii[k]) ||
+            (k && !(gridRadii[k]>gridRadii[k-1])))
+            throw std::invalid_argument("Multipole particle fit: invalid log-density radial grid");
+        gridLogR[k] = log(gridRadii[k]);
+    }
+    spl.resize(ind.size());
+    for(unsigned int c=0; c<ind.size(); c++) {
+        if(logDensityAndRatios[c].size() != gridRadii.size())
+            throw std::invalid_argument("Multipole particle fit: inconsistent log-density channel size");
+        for(size_t k=0; k<gridRadii.size(); k++)
+            if(!isFinite(logDensityAndRatios[c][k]))
+                throw std::domain_error("Multipole particle fit: nonfinite log-density or harmonic ratio");
+        int l=ind.index_l(c), m=ind.index_m(c);
+        if(ind.lmin(m)>ind.lmax || (l-ind.lmin(m))%ind.step!=0)
+            continue;
+        spl[c].reset(new math::CubicSpline(gridLogR, logDensityAndRatios[c]));
+    }
+    spl[0]->evalDeriv(gridLogR.front(), NULL, &innerSlope);
+    spl[0]->evalDeriv(gridLogR.back(), NULL, &outerSlope);
+    // These bounds follow from integrability of r^2*rho, not a slope cap.
+    if(!isFinite(innerSlope) || !isFinite(outerSlope) ||
+        !(innerSlope>-3) || !(outerSlope<-3))
+        throw std::domain_error("Multipole particle fit: recovered log-density tails have divergent mass");
+}
+
+bool DensitySphericalHarmonic::hasFiniteMassTails() const
+{
+    double inner=(*spl[0])(log(gridRadii.front())), outer=(*spl[0])(log(gridRadii.back()));
+    if(logScaling) { inner=exp(inner); outer=exp(outer); }
+    return isFinite(inner) && isFinite(outer) && isFinite(centralValue) &&
+        (inner==centralValue || (isFinite(innerSlope) && innerSlope>-3)) &&
+        (outer==0 || (isFinite(outerSlope) && outerSlope<-3));
+}
+
 void DensitySphericalHarmonic::getCoefs(
     std::vector<double> &radii, std::vector< std::vector<double> > &coefs) const
 {
@@ -1971,13 +2045,22 @@ void DensitySphericalHarmonic::getCoefsAtRadius(double r, double coefs[]) const
     double logr = log(math::clip(r, rmin, rmax));  // the argument of spline functions
     // first compute the l=0 coefficient, possibly log-unscaled
     double coef0 = (*spl[0])(logr);
-    if(logScaling)
+    if(fittedLogRepresentation) {
+        // Add exponents before exp: avoid both 0*infinity and a premature pow overflow.
+        if(r<rmin && innerSlope!=0)
+            coef0 += innerSlope * (log(r)-logr);
+        if(r>rmax && outerSlope!=0)
+            coef0 += outerSlope * (log(r)-logr);
         coef0 = exp(coef0);
-    // extrapolate if necessary
-    if(r < rmin)
-        coef0 = (coef0 - centralValue) * pow(r / rmin, innerSlope) + centralValue;
-    if(r > rmax)
-        coef0 *= pow(r / rmax, outerSlope);
+    } else {
+        if(logScaling)
+            coef0 = exp(coef0);
+        // Preserve the legacy evaluation order for ordinary density models.
+        if(r < rmin)
+            coef0 = (coef0 - centralValue) * pow(r / rmin, innerSlope) + centralValue;
+        if(r > rmax)
+            coef0 *= pow(r / rmax, outerSlope);
+    }
     coefs[0] = coef0;
     if(!logScaling)
         coef0 = 1;
@@ -2292,9 +2375,14 @@ shared_ptr<const Multipole> Multipole::createSoftened(
         coefsPot[0].assign(ind.size(), std::vector<double>(gridRadii.size(),0.));
         coefsPot[1]=coefsPot[0];
         if(noncentralMassive>0) {
-            std::vector<std::vector<double> > fittedCoefs;
-            computeDensityCoefsFromParticles(fitParticles,ind,gridRadii,fittedCoefs,1.);
+            std::vector<std::vector<double> > fittedCoefs, logDensityAndRatios;
+            computeDensityCoefsFromParticles(fitParticles,ind,gridRadii,fittedCoefs,1.,
+                &logDensityAndRatios);
             DensitySphericalHarmonic fitted(gridRadii,fittedCoefs);
+            shared_ptr<const DensitySphericalHarmonic> recovered;
+            if(!logDensityAndRatios.empty() && !fitted.hasFiniteMassTails())
+                recovered.reset(new DensitySphericalHarmonic(gridRadii,logDensityAndRatios,ind));
+            const DensitySphericalHarmonic& sourceDensity = recovered ? *recovered : fitted;
             std::vector<double> nodes;
             for(size_t k=0; k<=gridRadii.size(); k++) {
                 double left=k ? gridRadii[k-1] : 0.;
@@ -2323,7 +2411,7 @@ shared_ptr<const Multipole> Multipole::createSoftened(
                     for(int j=0; j<20; j++) {
                         double a=cuts[panel-1]+width*math::GLPOINTS[20][j];
                         fittedConvolutionKernel(r,a,h,lmax,kern);
-                        fitted.getCoefsAtRadius(a,&source[0]);
+                        sourceDensity.getCoefsAtRadius(a,&source[0]);
                         double weight=a*a*width*math::GLWEIGHTS[20][j];
                         for(int m=ind.mmin(); m<=ind.mmax; m++)
                             for(int l=ind.lmin(m); l<=ind.lmax; l+=ind.step) {
@@ -2369,13 +2457,17 @@ shared_ptr<const Multipole> Multipole::create(
         lmax = 0;
     if(isZRotSymmetric(sym))
         mmax = 0;
-    std::vector<std::vector<double> > coefDens, coefsPot[2];  /* Phi, dPhi */
+    std::vector<std::vector<double> > coefDens, coefsPot[2], logDensityAndRatios;  /* Phi, dPhi */
     math::SphHarmIndices ind(lmax, mmax, sym);
     // create an intermediate density approximation
-    computeDensityCoefsFromParticles(particles, ind, gridRadii, coefDens, smoothing);
+    computeDensityCoefsFromParticles(particles, ind, gridRadii, coefDens, smoothing,
+        &logDensityAndRatios);
     DensitySphericalHarmonic dens(gridRadii, coefDens);
+    shared_ptr<const DensitySphericalHarmonic> recovered;
+    if(!logDensityAndRatios.empty() && !dens.hasFiniteMassTails())
+        recovered.reset(new DensitySphericalHarmonic(gridRadii, logDensityAndRatios, ind));
     // construct the potential from it
-    computePotentialCoefsFromSource(dens, ind, gridRadii, coefsPot);
+    computePotentialCoefsFromSource(recovered ? *recovered : dens, ind, gridRadii, coefsPot);
     return shared_ptr<const Multipole>(new Multipole(gridRadii, coefsPot[0], coefsPot[1]));
 }
 

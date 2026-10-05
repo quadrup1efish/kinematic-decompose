@@ -107,6 +107,17 @@ public:
     DensitySphericalHarmonic(const std::vector<double> &gridRadii,
         const std::vector< std::vector<double> > &coefs);
 
+    /** Internal particle-fit recovery representation: channel 0 contains log density,
+        and all other channels contain harmonics normalized by the monopole.
+        Unlike ordinary coefficient input, this retains values lost to underflow.
+        The supplied indices describe the original particle-fit symmetry. */
+    DensitySphericalHarmonic(const std::vector<double> &gridRadii,
+        const std::vector< std::vector<double> > &logDensityAndRatios,
+        const math::SphHarmIndices& indices);
+
+    /** Whether the monopole asymptotes have finite mass (zero tails are allowed). */
+    bool hasFiniteMassTails() const;
+
     virtual coord::SymmetryType symmetry() const { return ind.symmetry(); }
     virtual std::string name() const { return myName(); }
     static std::string myName() { return "DensitySphericalHarmonic"; }
@@ -146,6 +157,9 @@ private:
 
     /// whether the l=0 term is interpolated using log-scaling
     bool logScaling;
+
+    /// Use log-domain extrapolation only for the recovered particle-fit representation.
+    bool fittedLogRepresentation;
 
     virtual double densityCar(const coord::PosCar &pos, double time) const {
         return densityCyl(toPosCyl(pos), time); }
