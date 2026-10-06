@@ -178,6 +178,19 @@ galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_me
 visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
 ```
 
+## 势场对称性与圆度参考
+
+默认模型采用球对称 DM（`s`，lmax=0）、轴对称气体（`a`，lmax=4）及
+非轴对称恒星（`n`，lmax=mmax=4），各组分均使用 `gridSizeR=30`。
+`construct_galaxy_potential_model(galaxy, stellar_symmetry='a')` 可恢复旧恒星
+模型用于比较。粒子能量使用完整势；参考圆轨道使用中平面势与径向力的
+八点方位平均，先平均径向力再计算圆速度。八点消除 m=1--4 的非零
+Fourier 分量，四个主轴点则混叠 m=4。传入更高阶势时，需要在
+`calculate_kinematic_param` 中指定 `azimuth_samples > mmax`。该中平面
+参考也对应关于 z=0 镜面对称化的势。保留现有 `jc(E)` 单调包络与端点
+外推；它不是完整非轴对称势中的严格角动量上界，不裁剪圆度。
+
+
 ## 算法原理：自适应高斯混合模型（AutoGMM）
 
 本包的核心是一个**自适应** GMM：不对分量数量做先验假设，而是**从数据中自动发现运动学结构**——先分类形态，再自动检测当前混合模型欠拟合的残差相空间区域并加入新分量，直到模型充分拟合。**分量数量由数据决定，而非人工指定**。

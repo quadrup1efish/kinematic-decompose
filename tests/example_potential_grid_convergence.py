@@ -12,22 +12,84 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+def agama_grid_worker(input_path, rmin, rmax, grid_size_r):
+    """Evaluate stock Agama in an isolated invocation of this same file."""
+    for variable in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                     'VECLIB_MAXIMUM_THREADS', 'NUMEXPR_NUM_THREADS', 'BLIS_NUM_THREADS'):
+        os.environ[variable] = '1'
+    import importlib
+    agama = importlib.import_module('agama')
+    import numpy as np
+    with np.load(input_path) as data:
+        positions = data['positions'].copy()
+        masses = data['masses'].copy()
+        radii = data['query_radii'].copy()
+    query = np.column_stack((radii, np.zeros_like(radii), np.zeros_like(radii)))
+    agama.setUnits(length=1, mass=1, velocity=1)
+    potential = agama.Potential(type='Multipole', particles=(positions, masses),
+                               symmetry='s', lmax=0, mmax=0, rmin=rmin, rmax=rmax,
+                               gridSizeR=grid_size_r)
+    phi = np.asarray(potential.potential(query), dtype=float).reshape(-1)
+    force = np.asarray(potential.force(query), dtype=float)
+    print(json.dumps({'potential': phi.tolist(), 'radial_force': force[:, 0].tolist()}))
+
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--agama-worker']:
+    agama_grid_worker(sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), int(sys.argv[5]))
+    sys.exit(0)
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-TEST_DIRECTORY = Path(__file__).resolve().parent
-if str(TEST_DIRECTORY) not in sys.path:
-    sys.path.insert(0, str(TEST_DIRECTORY))
-import _potential_plummer_reference as benchmark
-from kinematic_decompose.potential import Potential, setUnits
+PLUMMER_SCALE_KPC = 1.0
+PLUMMER_TRUNCATION_KPC = 10.0
+PLUMMER_TOTAL_MASS_MSUN = 1.0e10
+RMIN_KPC = 1.0e-3
+SOFTENING_AT_REFERENCE_KPC = 0.2
+SOFTENING_REFERENCE_N = 1_000
+ERROR_PROBE_COUNT = 64
 
 PARTICLE_COUNT = 1_000_000
 GRID_SIZES = (15, 30, 60, 120, 240)
 SEED = 2026
 RADIAL_ORDER = 64
 ANGULAR_ORDER = 96
+
+
+def analytic_plummer(radii):
+    """Independent potential/force of a finite, mass-normalized Plummer sphere."""
+    radii = np.asarray(radii, dtype=float)
+    scale = PLUMMER_SCALE_KPC
+    truncation = PLUMMER_TRUNCATION_KPC
+    enclosed_fraction = (truncation / np.sqrt(truncation**2 + scale**2))**3
+    source_mass = PLUMMER_TOTAL_MASS_MSUN / enclosed_fraction
+    gravity = 4.30091727067736e-6
+    inside = radii <= truncation
+    phi = np.empty_like(radii)
+    force = np.empty_like(radii)
+    boundary_term = scale**2 / (truncation**2 + scale**2)**1.5
+    phi[inside] = -gravity * source_mass * (
+        1 / np.sqrt(radii[inside]**2 + scale**2) - boundary_term)
+    force[inside] = -gravity * source_mass * radii[inside] / (radii[inside]**2 + scale**2)**1.5
+    phi[~inside] = -gravity * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]
+    force[~inside] = -gravity * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]**2
+    return phi, force
+
+
+def sample_truncated_plummer(count, rng):
+    """Draw an isotropic Plummer sample within the fixed truncation radius."""
+    fraction = (PLUMMER_TRUNCATION_KPC / np.sqrt(
+        PLUMMER_TRUNCATION_KPC**2 + PLUMMER_SCALE_KPC**2))**3
+    q23 = (rng.random(count) * fraction)**(2.0 / 3.0)
+    radius = PLUMMER_SCALE_KPC * np.sqrt(q23 / (1.0 - q23))
+    cosine = rng.uniform(-1.0, 1.0, count)
+    azimuth = rng.uniform(0.0, 2.0 * np.pi, count)
+    sine = np.sqrt(1.0 - cosine**2)
+    return np.column_stack((radius * sine * np.cos(azimuth),
+                            radius * sine * np.sin(azimuth), radius * cosine))
 
 
 def kernel_shape(q):
@@ -65,11 +127,11 @@ def softened_analytic_plummer(radii, support, radial_order=RADIAL_ORDER,
 
     phi_h = np.zeros_like(radii)
     force_h = np.zeros_like(radii)
-    truncation = benchmark.PLUMMER_TRUNCATION_KPC
+    truncation = PLUMMER_TRUNCATION_KPC
     for index, radius in enumerate(radii):
         if radius == 0:
             separations = support * q_nodes
-            phi, _ = benchmark.analytic_plummer(separations)
+            phi, _ = analytic_plummer(separations)
             phi_h[index] = np.sum(q_weights * 2 * phi)
             continue
         for q, radial_weight in zip(q_nodes, q_weights):
@@ -85,7 +147,7 @@ def softened_analytic_plummer(radii, support, radial_order=RADIAL_ORDER,
                 separation = np.sqrt(np.maximum(
                     0.0, radius**2 + offset**2 - 2 * radius * offset * mu
                 ))
-                phi, force = benchmark.analytic_plummer(separation)
+                phi, force = analytic_plummer(separation)
                 radial_projection = np.divide(
                     radius - offset * mu, separation,
                     out=np.zeros_like(separation), where=separation > 0,
@@ -112,8 +174,8 @@ def relative_error_summary(model, truth):
 def radial_cdf_max_deviation(positions):
     radius = np.linalg.norm(positions, axis=1)
     radius.sort()
-    scale = benchmark.PLUMMER_SCALE_KPC
-    truncation = benchmark.PLUMMER_TRUNCATION_KPC
+    scale = PLUMMER_SCALE_KPC
+    truncation = PLUMMER_TRUNCATION_KPC
     enclosed = (truncation / np.sqrt(truncation**2 + scale**2))**3
     cdf = (radius / np.sqrt(radius**2 + scale**2))**3 / enclosed
     empirical = np.arange(1, radius.size + 1) / radius.size
@@ -211,23 +273,24 @@ def save_convergence_figure(rows, convergence_reference_grid, output_path):
 
 
 def main():
+    from kinematic_decompose.potential import Potential, setUnits
     setUnits(length=1, mass=1, velocity=1)
     rng = np.random.default_rng(SEED)
     positions = np.ascontiguousarray(
-        benchmark.sample_truncated_plummer(PARTICLE_COUNT, rng)
+        sample_truncated_plummer(PARTICLE_COUNT, rng)
     )
     masses = np.full(PARTICLE_COUNT,
-                     benchmark.PLUMMER_TOTAL_MASS_MSUN / PARTICLE_COUNT)
-    support = benchmark.SOFTENING_AT_REFERENCE_KPC * (
-        benchmark.SOFTENING_REFERENCE_N / PARTICLE_COUNT
+                     PLUMMER_TOTAL_MASS_MSUN / PARTICLE_COUNT)
+    support = SOFTENING_AT_REFERENCE_KPC * (
+        SOFTENING_REFERENCE_N / PARTICLE_COUNT
     )**(1.0 / 3.0)
     radii = np.geomspace(
-        0.05 * benchmark.PLUMMER_SCALE_KPC,
-        benchmark.PLUMMER_TRUNCATION_KPC,
-        benchmark.ERROR_PROBE_COUNT,
+        0.05 * PLUMMER_SCALE_KPC,
+        PLUMMER_TRUNCATION_KPC,
+        ERROR_PROBE_COUNT,
     )
     query = np.column_stack((radii, np.zeros_like(radii), np.zeros_like(radii)))
-    truth_phi, truth_force = benchmark.analytic_plummer(radii)
+    truth_phi, truth_force = analytic_plummer(radii)
     softened_phi, softened_force = softened_analytic_plummer(radii, support)
     # Independently verify normalization of the radial kernel quadrature.
     qx, qw = np.polynomial.legendre.leggauss(200)
@@ -238,7 +301,7 @@ def main():
             (right - left) * qw / 2 * q**2 * kernel_shape(q)
         ))
 
-    worker = Path(__file__).with_name("_agama_potential_grid_worker.py")
+    worker = Path(__file__).resolve()
     rows = []
     with tempfile.TemporaryDirectory(
         prefix="potential-grid-convergence-", dir=os.environ.get("TMPDIR")
@@ -250,8 +313,8 @@ def main():
             native = Potential(
                 type="Multipole", particles=(positions, masses),
                 softening=support, symmetry="s", lmax=0, mmax=0,
-                rmin=benchmark.RMIN_KPC,
-                rmax=benchmark.PLUMMER_TRUNCATION_KPC,
+                rmin=RMIN_KPC,
+                rmax=PLUMMER_TRUNCATION_KPC,
                 gridSizeR=grid_size,
             )
             native_phi = np.asarray(native.potential(query), dtype=float).reshape(-1)
@@ -259,9 +322,8 @@ def main():
             del native
 
             result = subprocess.run(
-                [os.environ.get("AGAMA_PYTHON", sys.executable), str(worker), str(input_path),
-                 str(benchmark.RMIN_KPC),
-                 str(benchmark.PLUMMER_TRUNCATION_KPC), str(grid_size)],
+                [os.environ.get("AGAMA_PYTHON", sys.executable), str(worker), '--agama-worker',
+                 str(input_path), str(RMIN_KPC), str(PLUMMER_TRUNCATION_KPC), str(grid_size)],
                 check=True, capture_output=True, text=True,
             )
             agama_output = json.loads(result.stdout)
@@ -320,8 +382,8 @@ def main():
         "sample_radial_cdf_max_deviation": radial_cdf_max_deviation(positions),
         "softening_support_kpc": float(support),
         "softening_rule": "h=0.2 kpc*(1000/N)^(1/3)",
-        "fixed_rmin_kpc": benchmark.RMIN_KPC,
-        "fixed_rmax_kpc": benchmark.PLUMMER_TRUNCATION_KPC,
+        "fixed_rmin_kpc": RMIN_KPC,
+        "fixed_rmax_kpc": PLUMMER_TRUNCATION_KPC,
         "symmetry": "spherical, lmax=0",
         "radial_grid_sizes": list(GRID_SIZES),
         "self_convergence_reference_grid": reference_grid,

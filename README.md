@@ -179,6 +179,22 @@ galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_me
 visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
 ```
 
+## Potential symmetry and circularity reference
+
+The default model uses spherical DM (`s`, lmax=0), axisymmetric gas (`a`,
+lmax=4), and non-axisymmetric stars (`n`, lmax=mmax=4), all with `gridSizeR=30`.
+`construct_galaxy_potential_model(galaxy, stellar_symmetry='a')` restores the
+old stellar model for controlled comparisons. Particle energies use the full
+field. Reference circular orbits use an eight-point azimuthal mean of midplane
+potential and radial force, with speeds computed after force averaging. Eight
+uniform points remove all nonzero Fourier orders through m=4; four principal
+axes alias m=4. Higher-order supplied potentials need `azimuth_samples > mmax`
+in `calculate_kinematic_param`. The midplane reference also corresponds to a
+z-reflection-symmetrized field. The existing monotone `jc(E)` envelope and
+endpoint extrapolation remain; this reference is not a strict angular-momentum
+bound in the full non-axisymmetric field, and circularities are not clipped.
+
+
 ## Energy cut: two-component skew-t fit
 
 `util.get_Ecut_skewt(energies, masses)` fits an unweighted, binned Gaussian KDE

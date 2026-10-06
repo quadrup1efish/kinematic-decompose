@@ -19,6 +19,70 @@ import subprocess
 import sys
 import tempfile
 
+
+def benchmark_worker(input_path, config):
+    """Run this file's isolated constructor worker without plotting imports."""
+    import gc
+    import hashlib
+    import importlib
+    from time import perf_counter
+    import numpy as np
+
+    backend = config['backend']
+    if backend not in ('native_softened', 'agama'):
+        raise ValueError('Unsupported performance backend: ' + backend)
+    if backend == 'agama':
+        module = importlib.import_module('agama')
+        extension = module
+    else:
+        module = importlib.import_module('kinematic_decompose.potential')
+        module.set_num_threads(1)
+        extension = importlib.import_module('kinematic_decompose.potential._potential')
+    module.setUnits(length=1, mass=1, velocity=1)
+    with np.load(input_path) as data:
+        positions = data['positions'].copy()
+        masses = data['masses'].copy()
+    kwargs = dict(type='Multipole', particles=(positions, masses),
+                  symmetry=config['symmetry'], lmax=config['lmax'], mmax=config['mmax'],
+                  rmin=config['rmin'], rmax=config['rmax'], gridSizeR=config['grid_size'])
+    if backend == 'native_softened':
+        kwargs['softening'] = config['support']
+    if config['stage'] != 'build':
+        raise ValueError('Only construction timing is supported')
+    warmup = module.Potential(**kwargs)
+    del warmup
+    gc.collect()
+    times = []
+    for _ in range(config['repeats']):
+        start = perf_counter()
+        potential = module.Potential(**kwargs)
+        times.append(perf_counter() - start)
+        del potential
+        gc.collect()
+    values = np.asarray(times, dtype=float)
+    if not np.isfinite(values).all() or np.any(values <= 0):
+        raise ValueError('Timing samples must be finite and positive')
+    low, median, high = np.percentile(values, [16, 50, 84])
+    assert extension.__file__ is not None
+    binary = Path(extension.__file__).resolve()
+    def digest(array):
+        return hashlib.sha256(np.ascontiguousarray(array).data).hexdigest()
+    print(json.dumps({'config': config, 'source_sha256': digest(positions),
+                      'mass_sha256': digest(masses),
+                      'runtime': {'python': sys.version, 'numpy': np.__version__,
+                                  'extension': str(binary),
+                                  'extension_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                                  'threads': {key: os.environ[key] for key in THREAD_VARIABLES}},
+                      'results': [{'operation': 'build', 'size': len(positions),
+                                   'times_s': values.tolist(), 'p16_s': float(low),
+                                   'median_s': float(median), 'p84_s': float(high)}]}))
+
+
+# Dispatch before loading plotting libraries or the other native backend.
+if __name__ == '__main__' and sys.argv[1:2] == ['--worker']:
+    benchmark_worker(sys.argv[2], json.loads(sys.argv[3]))
+    sys.exit(0)
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -52,10 +116,10 @@ def source_sample(count, seed):
 
 def run_worker(input_path, config):
     python = os.environ.get("AGAMA_PYTHON", sys.executable) if config["backend"] == "agama" else sys.executable
-    worker = Path(__file__).with_name("_potential_performance_worker.py")
+    worker = Path(__file__).resolve()
     env = os.environ.copy()
     env.update({name: "1" for name in THREAD_VARIABLES})
-    result = subprocess.run([python, str(worker), str(input_path), json.dumps(config)],
+    result = subprocess.run([python, str(worker), '--worker', str(input_path), json.dumps(config)],
                             env=env, capture_output=True, text=True)
     if result.returncode:
         raise RuntimeError("Benchmark worker failed:\n" + result.stderr)

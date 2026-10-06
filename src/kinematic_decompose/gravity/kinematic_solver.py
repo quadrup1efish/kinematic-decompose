@@ -10,13 +10,13 @@ from kinematic_decompose.potential import Potential, setUnits
 setUnits(length=1, mass=1, velocity=1)
 
 # Multipole components for the galaxy potential model: (family, symmetry,
-# lmax). dm is treated as spherical (lmax=0, monopole only) since its
-# distribution is nearly round; gas and stars are axisymmetric (lmax=4,
-# enough to capture the disk flattening). See Agama docs on Multipole.
+# lmax). Retain fast spherical DM and axisymmetric gas approximations;
+# stellar non-axisymmetry is included through lmax=mmax=4. Circular references
+# use the azimuthally averaged midplane field, not one preferred direction.
 _GALAXY_POTENTIAL_COMPONENTS = [
     ('dm',  's', 0),
     ('gas', 'a', 4),
-    ('s',   'a', 4),
+    ('s',   'n', 4),
 ]
 
 # TNG publishes collisionless softenings as Plummer-equivalent lengths.  The
@@ -30,6 +30,28 @@ def _circular_velocity_from_radial_force(radii: np.ndarray, radial_force: np.nda
     vc_squared = -np.asarray(radii, dtype=float) * np.asarray(radial_force, dtype=float)
     valid = np.isfinite(vc_squared) & (vc_squared > 0)
     return np.sqrt(np.where(valid, vc_squared, np.nan))
+
+def _azimuthally_averaged_midplane(potential, radii, azimuth_samples=8):
+    """Mean potential and radial force; do not average speed or force norm.
+
+    Uniform periodic quadrature removes nonzero Fourier orders smaller than
+    azimuth_samples. Eight points cover the default mmax=4. A higher-order
+    supplied potential requires more points. Midplane values also define the
+    z-reflection-symmetrized reference, without projecting particle energies.
+    """
+    radii = np.asarray(radii, dtype=float)
+    if radii.ndim != 1 or not np.all(np.isfinite(radii) & (radii > 0)):
+        raise ValueError("Reference radii must be a finite positive 1D array.")
+    if not isinstance(azimuth_samples, (int, np.integer)) or azimuth_samples < 1:
+        raise ValueError("azimuth_samples must be a positive integer.")
+    angles = 2 * np.pi * np.arange(azimuth_samples) / azimuth_samples
+    directions = np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
+    points = (radii[:, None, None] * directions[None, :, :]).reshape(-1, 3)
+    values = np.asarray(potential.potential(points)).reshape(len(radii), azimuth_samples)
+    forces = np.asarray(potential.force(points)).reshape(len(radii), azimuth_samples, 3)
+    radial_forces = np.einsum('rni,ni->rn', forces, directions)
+    return values.mean(axis=1), radial_forces.mean(axis=1)
+
 
 def create_multipole_potential(
     positions: np.ndarray,
@@ -119,13 +141,16 @@ def create_multipole_potential(
     
     return pot
 
-def construct_galaxy_potential_model(galaxy):
+def construct_galaxy_potential_model(galaxy, *, stellar_symmetry='n'):
+    """Build the s/a/n, order-4, grid-30 model; 'a' restores the old stellar model."""
     eps = galaxy.properties.get('eps', 0.39)
     kernel_support = _KERNEL_SUPPORT_PER_PLUMMER_EQUIVALENT * eps
 
     potentials = []
 
     for name, symmetry, lmax in _GALAXY_POTENTIAL_COMPONENTS:
+        if name == 's':
+            symmetry = stellar_symmetry
         pos = getattr(galaxy, name)['pos']
         if name == 'dm':
             mass = np.broadcast_to(
@@ -160,7 +185,9 @@ def calculate_kinematic_param(
     galaxy: SimSnap,
     potential: Potential | None = None,
     partType: str = 'star',
-    filename: str | None = None
+    filename: str | None = None,
+    *,
+    azimuth_samples: int = 8,
 ) -> SimSnap:
     """
     Calculate kinematic parameters for galaxy particles.
@@ -177,6 +204,8 @@ def calculate_kinematic_param(
             the potential is only computed for this family's particles, since
             no other family's 'phi'/'e' is consumed downstream.
         filename: Potential file to load (if None, compute from particles)
+        azimuth_samples: Ring samples for the circular reference. Must exceed
+            mmax of a supplied potential; 8 covers the default order-4 model.
 
     Returns:
         Modified galaxy snapshot with 'phi' and 'jc' added to the `partType`
@@ -218,17 +247,11 @@ def calculate_kinematic_param(
     r_bins = np.logspace(np.log10(r_min), np.log10(r_max), 100)
     r_midpoints = 0.5 * (r_bins[:-1] + r_bins[1:])
     
-    # 4. Compute circular orbit quantities at grid points
-    grid_points = np.column_stack([
-        r_midpoints,
-        np.zeros_like(r_midpoints),
-        np.zeros_like(r_midpoints)
-    ])
-    
-    circular_potentials = potential.potential(grid_points)
-    forces = np.asarray(potential.force(grid_points))
-    radial_unit = grid_points[:, :2] / r_midpoints[:, np.newaxis]
-    radial_forces = np.sum(forces[:, :2] * radial_unit, axis=1)
+    # 4. Average the field before computing speeds; particle energies remain
+    # those of the full potential. One sample reproduces the legacy x-axis.
+    circular_potentials, radial_forces = _azimuthally_averaged_midplane(
+        potential, r_midpoints, azimuth_samples=azimuth_samples
+    )
     circular_velocities = _circular_velocity_from_radial_force(
         r_midpoints, radial_forces
     )
@@ -256,13 +279,14 @@ def calculate_kinematic_param(
     sorted_angular_momenta = finite_angular_momenta[sort_idx]
     # L_c(E) can be non-monotonic when the potential has a central cusp:
     # the same energy then admits two circular-orbit radii (inner/outer
-    # branch). Every orbit satisfies |j| <= L_c(E), so interpolate on the
+    # branch). Preserve the historical monotone reference envelope, using the
     # per-energy upper envelope: for each unique branch energy take the
     # maximum angular momentum among the grid points AT that energy.
     # Then apply a running cumulative maximum over the per-energy maxima:
     # this enforces a monotonically non-decreasing upper envelope, so the
     # folded (non-monotonic) L_c(E) region cannot drag interpolated jc
-    # below the physical circular-orbit bound for any orbit. Deduplicating
+    # below this reference envelope. It is NOT a rigorous angular-momentum
+    # bound in the full non-axisymmetric potential. Deduplicating
     # energies with np.unique also guarantees xp is strictly increasing
     # (np.interp requirement) before the log transform.
     unique_energies, first_idx = np.unique(sorted_energies, return_index=True)

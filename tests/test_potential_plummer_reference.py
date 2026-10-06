@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from scipy.integrate import quad
 
-SCRIPT = Path(__file__).with_name("_potential_plummer_reference.py")
+SCRIPT = Path(__file__).with_name("example_potential_grid_convergence.py")
 spec = importlib.util.spec_from_file_location("plummer_accuracy_reference", SCRIPT)
 assert spec is not None and spec.loader is not None
 reference = importlib.util.module_from_spec(spec)
