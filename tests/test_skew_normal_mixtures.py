@@ -1,3 +1,19 @@
+"""Skew-normal mixture correctness, scope and performance regressions."""
+import itertools
+import time
+from typing import Any
+import numpy as np
+import pytest
+from sklearn.metrics import adjusted_rand_score
+from kinematic_decompose.mixture import SkewNormalMixtures, GaussianMixture
+from kinematic_decompose.mixture._skew_normal_mixtures import (
+    mixture_intersection,
+    skew_normal,
+)
+
+
+# Example skew normal mixtures
+
 """Functional tests for SkewNormalMixtures -- a finite mixture of
 skew-normal densities (Lin, Lee & Yen 2007, Statistica Sinica 17,
 909-927; multivariate ECM aligned with the mixsmsn R package, Prates,
@@ -53,22 +69,11 @@ Test matrix (locked from measured runs, N = 1e5):
      - float32: the log-Phi term loses precision; float64 recommended
 
 Run:
-    python tests/example_skew_normal_mixtures.py   # pytest + visualization
-    pytest tests/example_skew_normal_mixtures.py   # tests only
+    python tests/test_skew_normal_mixtures.py   # pytest + visualization
+    pytest tests/test_skew_normal_mixtures.py   # tests only
 """
-import itertools
-import time
-from typing import Any
 
-import numpy as np
-import pytest
-from sklearn.metrics import adjusted_rand_score
 
-from kinematic_decompose.mixture import SkewNormalMixtures, GaussianMixture
-from kinematic_decompose.mixture._skew_normal_mixtures import (
-    mixture_intersection,
-    skew_normal,
-)
 
 N = 100_000
 SEED = 42

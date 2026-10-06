@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from kinematic_decompose import potential as backend
+from kinematic_decompose.potential import Potential
 
 
 @pytest.fixture(autouse=True)
@@ -196,3 +197,164 @@ def test_near_axis_density_branch_boundary(symmetry, z, softening):
     transition_tolerance = 32 * np.cbrt(np.finfo(float).eps) * curvature_scale
     np.testing.assert_allclose(density[2:], axis_density, rtol=0, atol=transition_tolerance)
     np.testing.assert_allclose(density[2], density[1], rtol=0, atol=transition_tolerance)
+
+
+# Fitted-source softened convolution.
+
+def _build(pos, mass, softening, *, symmetry="a", lmax=4):
+    return Potential(
+        type="Multipole", particles=(pos, mass), softening=softening,
+        symmetry=symmetry, lmax=lmax, mmax=lmax,
+        gridSizeR=30, rmin=0.01, rmax=20.0,
+    )
+
+
+def test_sparse_source_keeps_original_particle_kernel():
+    """A poorly sampled radial/harmonic fit must not alter sparse gas forces."""
+    rng = np.random.default_rng(10)
+    positions = rng.normal(size=(350, 3))
+    masses = rng.uniform(0.5, 1.5, len(positions))
+    queries = rng.normal(size=(25, 3))
+    scalar = _build(positions, masses, 0.8)
+    per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+    np.testing.assert_array_equal(scalar.potential(queries), per_particle.potential(queries))
+    np.testing.assert_array_equal(scalar.force(queries), per_particle.force(queries))
+
+
+def test_fitted_convolution_retains_mass_at_origin():
+    """A central massive particle is added analytically, not dropped by log-r fitting."""
+    rng = np.random.default_rng(16)
+    positions = rng.normal(size=(1600, 3))
+    masses = rng.uniform(0.5, 1.5, len(positions))
+    center_mass = 10.0
+    points = np.array([[0., 0., 0.], [0.1, 0., 0.], [0.5, 0., 0.], [3., 0., 0.]])
+    other = _build(positions, masses, 0.8)
+    combined = _build(np.vstack((positions, np.zeros((1, 3)))),
+                      np.append(masses, center_mass), 0.8)
+    central = _build(np.zeros((1, 3)), np.array([center_mass]), 0.8)
+    np.testing.assert_allclose(combined.potential(points) - other.potential(points),
+                               central.potential(points), rtol=2e-6, atol=1e-12)
+    # Interpolation of the l=0 potential uses log scaling, so evaluation of
+    # separately interpolated components is not exactly additive off-grid.
+    np.testing.assert_allclose(combined.force(points) - other.force(points),
+                               central.force(points), rtol=5e-5, atol=1e-12)
+
+
+def test_uniform_support_array_does_not_select_fitted_convolution():
+    """Representation is part of the numerical contract above the fit threshold."""
+    rng = np.random.default_rng(1002)
+    positions = rng.normal(size=(1600, 3)) * [1.7, 0.8, 0.5]
+    masses = rng.uniform(0.5, 1.5, len(positions))
+    queries = rng.normal(size=(40, 3))
+    scalar = _build(positions, masses, 0.8)
+    per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+    for method in ("potential", "force"):
+        a = getattr(scalar, method)(queries)
+        b = getattr(per_particle, method)(queries)
+        assert np.isfinite(a).all() and np.isfinite(b).all()
+        assert a.tobytes() != b.tobytes()
+
+
+def test_fitted_source_threshold_counts_positive_noncentral_particles():
+    """For this grid/order, 899 particles fall back; the 900th selects fitting."""
+    rng = np.random.default_rng(1003)
+    positions = rng.normal(size=(900, 3)) * [1.7, 0.8, 0.5]
+    masses = np.ones(len(positions))
+    queries = rng.normal(size=(40, 3))
+    for last_mass, fitted in ((0.0, False), (1e-12, True)):
+        masses[-1] = last_mass
+        scalar = _build(positions, masses, 0.8)
+        per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+        for method in ("potential", "force"):
+            a = getattr(scalar, method)(queries)
+            b = getattr(per_particle, method)(queries)
+            assert np.isfinite(a).all() and np.isfinite(b).all()
+            assert (a.tobytes() != b.tobytes()) == fitted
+
+    # A massive central particle must not count toward the noncentral threshold.
+    positions[-1] = 0.0
+    masses[-1] = 1.0
+    scalar = _build(positions, masses, 0.8)
+    per_particle = _build(positions, masses, np.full(len(masses), 0.8))
+    assert scalar.potential(queries).tobytes() == per_particle.potential(queries).tobytes()
+    assert scalar.force(queries).tobytes() == per_particle.force(queries).tobytes()
+
+
+# Compact-kernel radial moments and exterior multipole limits.
+
+def test_narrow_softened_monopole_is_resolved_independently_of_radial_grid():
+    """A compact kernel narrower than every radial cell must retain its mass."""
+    particle_position = np.array([[0.3, 0.0, 0.0]])
+    particle_mass = np.array([1.0])
+    rmin, rmax = 0.01, 2.0
+
+    for grid_size in (30, 60):
+        radii = np.exp(np.linspace(np.log(rmin), np.log(rmax), grid_size))
+        exterior = radii > 0.6
+        query_points = np.column_stack((radii[exterior], np.zeros((exterior.sum(), 2))))
+        expected = -backend.G / radii[exterior]
+
+        for support in (3e-4, 3e-5):
+            potential = Potential(
+                type="Multipole",
+                particles=(particle_position, particle_mass),
+                softening=support,
+                symmetry="s",
+                lmax=0,
+                mmax=0,
+                gridSizeR=grid_size,
+                rmin=rmin,
+                rmax=rmax,
+            )
+            actual = np.asarray(potential.potential(query_points)).ravel()
+            np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-12)
+
+
+def test_high_order_origin_overlapping_kernel_matches_exterior_multipole_series():
+    """Small-a/h angular moments must not blow up near the radial origin."""
+    for particle_radius, support in ((1e-3, 0.8), (0.1, 0.8)):
+        grid_size, rmin, rmax = 80, 1e-4, 20.0
+        radii = np.exp(np.linspace(np.log(rmin), np.log(rmax), grid_size))
+        radius = radii[70]
+        potential = Potential(
+            type="Multipole",
+            particles=(np.array([[particle_radius, 0.0, 0.0]]), np.array([1.0])),
+            softening=support,
+            symmetry="n",
+            lmax=8,
+            mmax=8,
+            gridSizeR=grid_size,
+            rmin=rmin,
+            rmax=rmax,
+        )
+
+        actual = float(np.asarray(potential.potential([[radius, 0.0, 0.0]])).ravel()[0])
+        expected = -backend.G / radius * sum((particle_radius / radius) ** ell for ell in range(9))
+        np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-12)
+
+
+def test_softened_lmax2_exterior_field_matches_quadrupole_series():
+    """The lmax=2 interpolation path must retain the full quadrupole field."""
+    particle_radius, support, radius, angle = 1.0, 0.1, 5.0, 0.73
+    potential = Potential(
+        type="Multipole",
+        particles=(np.array([[particle_radius, 0.0, 0.0]]), np.array([1.0])),
+        softening=support,
+        symmetry="n",
+        lmax=2,
+        mmax=2,
+        gridSizeR=80,
+        rmin=0.01,
+        rmax=10.0,
+    )
+    point = np.array([[radius * np.cos(angle), radius * np.sin(angle), 0.0]])
+    cosine = np.cos(angle)
+    p2 = 0.5 * (3.0 * cosine**2 - 1.0)
+    expected = -backend.G / radius * (
+        1.0 + (particle_radius / radius) * cosine
+        + (particle_radius / radius) ** 2 * p2
+    )
+
+    actual = float(np.asarray(potential.potential(point)).ravel()[0])
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-12)

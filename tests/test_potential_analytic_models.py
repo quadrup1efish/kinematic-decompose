@@ -7,6 +7,7 @@ import sys
 
 import numpy as np
 import pytest
+from scipy.integrate import quad
 
 from kinematic_decompose import potential as backend
 
@@ -15,6 +16,12 @@ spec = importlib.util.spec_from_file_location("analytic_benchmark", SCRIPT)
 assert spec is not None and spec.loader is not None
 benchmark = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(benchmark)
+
+PLUMMER_SCRIPT = Path(__file__).with_name("example_potential_grid_convergence.py")
+plummer_spec = importlib.util.spec_from_file_location("plummer_accuracy_reference", PLUMMER_SCRIPT)
+assert plummer_spec is not None and plummer_spec.loader is not None
+plummer_reference = importlib.util.module_from_spec(plummer_spec)
+plummer_spec.loader.exec_module(plummer_reference)
 
 
 @pytest.mark.parametrize("model", ["MiyamotoNagai", "Ferrers"])
@@ -122,3 +129,25 @@ def test_native_field_against_independent_agama_reference(reference, softening, 
         assert np.isfinite(force).all()
     finally:
         backend.setUnits()
+
+
+# Independent truncated-Plummer accuracy references.
+
+def test_analytic_central_potential_matches_shell_integral():
+    scale = plummer_reference.PLUMMER_SCALE_KPC
+    truncation = plummer_reference.PLUMMER_TRUNCATION_KPC
+    fraction = truncation**3 / (truncation**2 + scale**2)**1.5
+    rho0 = 3 * plummer_reference.PLUMMER_TOTAL_MASS_MSUN / (4 * np.pi * scale**3 * fraction)
+    integral = quad(lambda r: rho0 * r * (1 + (r/scale)**2)**-2.5,
+                    0, truncation, epsabs=0, epsrel=1e-12)[0]
+    expected = -4 * np.pi * 4.30091727067736e-6 * integral
+    actual = plummer_reference.analytic_plummer(np.zeros(1))[0][0]
+    np.testing.assert_allclose(actual, expected, rtol=1e-12)
+
+
+def test_analytic_boundary_matches_kepler_exterior():
+    radii = np.array([plummer_reference.PLUMMER_TRUNCATION_KPC, 20.])
+    phi, force = plummer_reference.analytic_plummer(radii)
+    gm = 4.30091727067736e-6 * plummer_reference.PLUMMER_TOTAL_MASS_MSUN
+    np.testing.assert_allclose(phi, -gm/radii, rtol=1e-14)
+    np.testing.assert_allclose(force, -gm/radii**2, rtol=1e-14)

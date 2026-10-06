@@ -1,3 +1,22 @@
+"""TNG cutout loading, filename helpers and periodic snapshot centering."""
+import os
+import sys
+import numpy as np
+import pynbody
+import matplotlib.pyplot as plt
+from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
+from kinematic_decompose.PyTNG.cutout_loader import (
+    make_cutout_filename,
+    parse_cutout_filename,
+    find_cutout_file,
+    list_cutout_files,
+)
+from pynbody.array import SimArray
+from pynbody import units
+
+
+# Example load cutout
+
 """
 Example: load a TNG cutout HDF5 file via the PyTNG Snapshot interface.
 
@@ -10,20 +29,8 @@ snapshot directory (no output/, no loadHeader) — the header metadata
 comes from the cutout file itself.
 """
 
-import os
-import sys
-import numpy as np
 
-import pynbody
-import matplotlib.pyplot as plt
 
-from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
-from kinematic_decompose.PyTNG.cutout_loader import (
-    make_cutout_filename,
-    parse_cutout_filename,
-    find_cutout_file,
-    list_cutout_files,
-)
 
 CUTOUT_DIR = "/Users/yuwa/sims.TNG/TNG50-1/cutouts"
 SUB_ID = 550475
@@ -142,3 +149,51 @@ if __name__ == "__main__":
         out = os.path.join(out_dir, "example_load_cutout.png")
         plt.savefig(out, dpi=150)
         print("saved:", out)
+
+
+# Test snapshot center periodic
+
+def _snapshot_with_positions(positions, boxsize=None):
+    container = pynbody.new(star=len(positions))
+    container.star["pos"] = SimArray(np.asarray(positions, dtype=float), units.kpc)
+    if boxsize is not None:
+        container.properties["boxsize"] = SimArray(float(boxsize), units.kpc)
+    snapshot = Snapshot.__new__(Snapshot)
+    snapshot.container = container
+    snapshot.group_catalog = {}
+    return snapshot
+
+
+def test_explicit_center_wraps_particles_across_periodic_boundary():
+    snapshot = _snapshot_with_positions(
+        [[0.2, 5.0, 5.0], [9.7, 5.0, 5.0], [0.1, 5.2, 5.0]], boxsize=10.0
+    )
+
+    snapshot.center(cen=SimArray([9.8, 5.0, 5.0], units.kpc), with_velocity=False)
+
+    positions = np.asarray(snapshot.container.star["pos"])
+    np.testing.assert_allclose(positions[:, 0], [0.4, -0.1, 0.3], atol=1e-6)
+    assert np.max(np.linalg.norm(positions, axis=1)) < 1.0
+    assert np.isclose(np.linalg.norm(positions[0] - positions[1]), 0.5)
+
+
+def test_explicit_center_keeps_nonperiodic_translation_when_boxsize_missing():
+    snapshot = _snapshot_with_positions([[12.0, 0.0, 0.0]])
+
+    snapshot.center(cen=SimArray([10.0, 0.0, 0.0], units.kpc), with_velocity=False)
+
+    np.testing.assert_allclose(snapshot.container.star["pos"], [[2.0, 0.0, 0.0]])
+
+
+def test_automatic_center_still_uses_pynbody_wrap(monkeypatch):
+    snapshot = _snapshot_with_positions([[1.0, 0.0, 0.0]], boxsize=10.0)
+    calls = {}
+
+    def fake_center(container, **kwargs):
+        calls.update(kwargs)
+
+    monkeypatch.setattr(pynbody.analysis, "center", fake_center)
+    snapshot.center(cen=None, with_velocity=False)
+
+    assert calls["wrap"] is True
+    assert calls["with_velocity"] is False

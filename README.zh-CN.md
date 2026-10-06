@@ -255,23 +255,21 @@ Fourier 分量，四个主轴点则混叠 m=4。传入更高阶势时，需要�
   <img src="image/scaling_performance.png" width="700" alt="Mini-batch 与 full-batch 的缩放对比"/>
 </p>
 
-同一规律在 batch size 尺度上的验证（实测 TV 与理论斜率，d = 1–3）：
+batch-size 选择统一展示在一张图中：上排比较 $d=1$–3 的实测 TV 与
+$S^{-1/2}$ 参考斜率，只保留一个内置公共图例。下排展示 $(d,\varepsilon)$、
+$(k,\varepsilon)$ 和 $(d,k)$ 三个参数平面，颜色统一表示解析的自动 batch size
+$S=\lceil kd^2/\varepsilon^2\rceil$，共用一个内嵌对数 colorbar。
+色图中的黑色参考星标对应 $(k,d,\varepsilon)=(6,3,0.05)$，即 $S=21600$。
 
 <p align="center">
-  <img src="image/batch_size_selection.png" width="700" alt="batch_size 理论 vs 实测"/>
-</p>
-
-以及自动 batch size 随问题参数（d, k, ε）的演化：
-
-<p align="center">
-  <img src="image/batch_size_scan.png" width="700" alt="batch_size 参数扫描"/>
+  <img src="images/batch_size.png" width="1000" alt="batch-size 实测与参数扫描六面板合图"/>
 </p>
 
 核心机制是**理论支撑的 batch_size 选择**：默认 `batch_size`（未显式给出时）由学习 $\mathbb{R}^d$ 中 $k$ 高斯混合到 TV 误差 $\varepsilon$ 的近最优样本复杂度推导——$\tilde{\Theta}(kd^2/\varepsilon^2)$（Ashtiani et al. 2020, Thm 1.5）：
 
 $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误差）},$$
 
-由 `tv_error` 参数直接控制（$\varepsilon$ 越小 → batch 越大 → mini-batch 解越接近 full-batch）。可选保守 polylog 因子 $\ln(kd/\varepsilon\delta)$ 实现高概率版本（`use_polylog=True`），默认关闭——期望级精度经实证已足够。下图用合成数据验证该定律：实测 TV(mini, true) 遵循 $\varepsilon \propto \sqrt{kd^2/S}$ 斜率。缩放行为由 `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
+由 `tv_error` 参数直接控制（$\varepsilon$ 越小 → batch 越大 → mini-batch 解越接近 full-batch）。可选保守 polylog 因子 $\ln(kd/\varepsilon\delta)$ 实现高概率版本（`use_polylog=True`），默认关闭——期望级精度经实证已足够。下图用合成数据验证该定律：实测 TV(mini, true) 遵循 $\varepsilon \propto \sqrt{kd^2/S}$ 斜率。缩放行为由 `tests/test_gaussian_mixture.py::test_scaling_with_n_samples` 验证（N = 10⁴–10⁶、固定 10 次迭代、每个 N 的 mini-batch 重复 10 次：中位数曲线 + 16–84% 误差带）。右侧轴显示 full 与 mini 收敛解的**贝叶斯因子** BF = exp(ΔLB)（对数刻度，N 抵消），纵轴范围覆盖 Jeffreys "轶闻级"区 [1/3, 3]。实测 BF ≈ 1（本次运行 0.96–1.01）——**无证据表明两者存在差异**：两条收敛路径在统计上不可区分，而非仅仅"接近"。
 
 ## 可视化风格
 
@@ -296,19 +294,19 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 逐位相同，也不复现旧参考实现的原点/轴线行为。修复路径由本地密度、
 势梯度、Cartesian Hessian 和近轴分支边界测试独立验证。
 测试套件不再包含依赖未指定历史二进制的一次性优化对照。
-当前 skew-t/KDE 回归在 `tests/test_skew_t_ecut.py`；`get_Ecut` 仍用于不可分辨
-成分的 fallback，由 `tests/example_eoemin_cut.py` 覆盖。
-Skew-normal 测试仍验证独立公开的 `SkewNormalMixtures` 接口。
+测试按主题合并；原本需要显式选择 example 文件的算法测试，现已纳入默认收集：
 
-另外可显式选择以下算法示例：
+- `tests/test_energy_cut.py` — 当前 skew-t/KDE 回归，以及 `get_Ecut` 初始化/fallback 的 21 个测试、19 个合成场景；直接运行该文件仍可绘制 TRUE（绿虚线）/ DETECTED（红实线）对照图。
+- `tests/test_gaussian_mixture.py` — GMM 行为、N 缩放基准，以及全部 18 个 mini-batch 样本复杂度与 TV 距离等价性测试。
+- `tests/test_skew_normal_mixtures.py` — 独立公开的 `SkewNormalMixtures` 接口、聚类、能量截断和性能测试。
+- `tests/test_snapshot.py` — cutout 加载、文件名工具和周期定心。cutout 集成测试依赖文件中指定的本地 TNG50-1 数据；真实星系 pipeline 另由 `tests/test_real_galaxy_smoke.py` 验证。
+- `tests/test_calculation_guardrails.py` — pipeline 防护与非轴对称势的方位平均圆轨道参考。
+- `tests/test_potential_density.py` — 密度、Poisson 一致性、软化卷积与径向多极矩。
+- `tests/test_native_numerics.py` — 内部 log-density 恢复、Cartesian 轴线 Hessian 与预计算 spline EDF。
 
-```bash
-python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q
-```
-
-- `tests/example_eoemin_cut.py` — 21 个测试，锁定能量截断算法在 19 个合成场景（有谷、无缝、均匀、噪声等）下的行为，含 TRUE（绿虚线）/ DETECTED（红实线）叠加可视化。
-- `tests/example_gaussian_mixture.py` — GMM/AutoGMM 行为测试及上述 N 缩放基准。
-- `tests/example_batch_size.py` — 18 个测试锁定 batch_size 理论：$k d^2/\varepsilon^2$ 公式及其缩放规律、fit 时自动推导、mini/full 收敛等价性的 **TV 距离**验证（同时对比 full-batch 模型与真实分布）、N 不变性、polylog 保守性，以及两张可视化图。
+解析精度/Plummer 参考、外部 Agama 兼容性和性能绘图回归继续保留各自的测试文件。
+已删除 `tests/fixtures` 中存储的剖面及对应一次性绘图脚本；解析基准自行生成输入。
+catalog 示例与科研 notebook 保留。
 
 ## 引用
 

@@ -282,23 +282,22 @@ The `GaussianMixture` supports **mini-batch EM whose per-iteration cost is indep
   <img src="image/scaling_performance.png" width="700" alt="Mini-batch vs full-batch scaling"/>
 </p>
 
-The same law as a function of the batch size itself (measured TV vs theory slope, d = 1–3):
+Batch-size selection in one figure: the top row compares measured TV with the
+$S^{-1/2}$ reference slope for $d=1$–3, with one shared inset legend. The bottom
+row shows the $(d,\varepsilon)$, $(k,\varepsilon)$ and $(d,k)$ parameter planes;
+their colors encode the exact auto batch size $S=\lceil kd^2/\varepsilon^2\rceil$
+on one common logarithmic scale, with an inset colorbar. The black reference
+stars in these maps mark $(k,d,\varepsilon)=(6,3,0.05)$, giving $S=21600$.
 
 <p align="center">
-  <img src="image/batch_size_selection.png" width="700" alt="Batch-size theory vs measurement"/>
-</p>
-
-and how the auto batch size grows with the problem parameters (d, k, ε):
-
-<p align="center">
-  <img src="image/batch_size_scan.png" width="700" alt="Batch-size parameter scan"/>
+  <img src="images/batch_size.png" width="1000" alt="Batch-size measurements and parameter scans in a six-panel figure"/>
 </p>
 
 The key enabler is a **theory-grounded batch size**: the default `batch_size` (when not given explicitly) is derived from the near-optimal sample complexity of learning a $k$-Gaussian mixture in $\mathbb{R}^d$ to TV error $\varepsilon$ — $\tilde{\Theta}(kd^2/\varepsilon^2)$ (Ashtiani et al. 2020, Thm 1.5):
 
 $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{(TV error)},$$
 
-controlled directly by the `tv_error` parameter (smaller $\varepsilon$ → larger batch → mini-batch solution closer to full-batch). An optional conservative polylog factor $\ln(kd/\varepsilon\delta)$ implements the high-probability version (`use_polylog=True`); it is off by default because the expectation-level precision is empirically sufficient. The figure below validates the law on synthetic data: measured TV(mini, true) follows the $\varepsilon \propto \sqrt{kd^2/S}$ slope. The scaling behaviour is verified by `tests/example_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, mini-batch repeated 10× per N: median curve with 16–84% spread bands). The right axis shows the **Bayes factor** BF = exp(ΔLB) of the full- vs mini-batch converged solutions on a log scale, with the y-range spanning the Jeffreys "no substantial evidence" region [1/3, 3]. The measured BF ≈ 1 (0.96–1.01 in this run) — **no evidence of a difference**: the two convergence paths are statistically indistinguishable, not merely close.
+controlled directly by the `tv_error` parameter (smaller $\varepsilon$ → larger batch → mini-batch solution closer to full-batch). An optional conservative polylog factor $\ln(kd/\varepsilon\delta)$ implements the high-probability version (`use_polylog=True`); it is off by default because the expectation-level precision is empirically sufficient. The figure below validates the law on synthetic data: measured TV(mini, true) follows the $\varepsilon \propto \sqrt{kd^2/S}$ slope. The scaling behaviour is verified by `tests/test_gaussian_mixture.py::test_scaling_with_n_samples` (N = 10⁴–10⁶, fixed 10 iterations, mini-batch repeated 10× per N: median curve with 16–84% spread bands). The right axis shows the **Bayes factor** BF = exp(ΔLB) of the full- vs mini-batch converged solutions on a log scale, with the y-range spanning the Jeffreys "no substantial evidence" region [1/3, 3]. The measured BF ≈ 1 (0.96–1.01 in this run) — **no evidence of a difference**: the two convergence paths are statistically indistinguishable, not merely close.
 
 ## Visualisation Style
 
@@ -324,20 +323,22 @@ unchanged off-axis evaluation domain; they do not assert identical particle
 fits or reproduce the old reference's origin/axis behavior. Native density,
 force-gradient, Cartesian Hessian and near-axis boundary tests validate those
 repaired paths independently. The suite no longer includes one-off optimization
-comparisons against an unspecified historical binary. Current skew-t/KDE tests
-are in `tests/test_skew_t_ecut.py`; `get_Ecut` remains the unresolved-component
-fallback and is covered by `tests/example_eoemin_cut.py`. Skew-normal mixture
-tests remain relevant to the separately exported `SkewNormalMixtures` API.
+comparisons against an unspecified historical binary. Tests are consolidated
+by topic; algorithm tests previously requiring explicit example-file selection
+are now included in the default collection:
 
-Additional explicitly selected algorithm examples:
+- `tests/test_energy_cut.py` — current skew-t/KDE regressions and the 21 `get_Ecut` initializer/fallback cases across 19 synthetic scenarios; the TRUE (green dashed) vs DETECTED (red solid) visualization remains available by running this file directly.
+- `tests/test_gaussian_mixture.py` — GMM behaviour, N-scaling, and all 18 mini-batch sample-complexity and total-variation equivalence tests.
+- `tests/test_skew_normal_mixtures.py` — the separately exported `SkewNormalMixtures` API, clustering, energy-cut and performance tests.
+- `tests/test_snapshot.py` — cutout loading, filename helpers and periodic centering. Cutout integration tests require the local TNG50-1 data path specified in the file; `tests/test_real_galaxy_smoke.py` separately covers the real-galaxy pipeline.
+- `tests/test_calculation_guardrails.py` — pipeline guardrails and the non-axisymmetric, azimuthally averaged circular reference.
+- `tests/test_potential_density.py` — density, Poisson consistency, softened convolution and radial multipole moments.
+- `tests/test_native_numerics.py` — internal log-density recovery, Cartesian axis Hessians and prepared spline EDF.
 
-```bash
-python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q
-```
-
-- `tests/example_eoemin_cut.py` — 21 tests locking the behaviour of the energy-cut algorithm across 19 synthetic scenarios (valley, seamless, uniform, noisy regimes), with TRUE (green dashed) vs DETECTED (red solid) overlays.
-- `tests/example_gaussian_mixture.py` — GMM/AutoGMM behaviour tests plus the N-scaling benchmark described above.
-- `tests/example_batch_size.py` — 18 tests locking the batch-size theory: the $k d^2/\varepsilon^2$ formula and its scaling, fit-time auto-derivation, the mini/full convergence equivalence measured in **total-variation distance** (vs both the full-batch model and the ground-truth density), N-invariance, polylog conservativeness, and two visualisation figures.
+Analytic accuracy/Plummer references, external Agama compatibility and performance
+plot regressions retain their dedicated test files. The stored `tests/fixtures`
+profiles and their one-off plotting script have been removed; analytic benchmarks
+generate their own inputs. The catalog example and scientific notebook are retained.
 
 ## Reference
 
