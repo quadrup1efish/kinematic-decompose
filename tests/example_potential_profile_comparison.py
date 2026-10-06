@@ -30,11 +30,12 @@ def set_publication_style() -> None:
         "font.family": "serif",
         "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
         "mathtext.fontset": "stix",
-        "font.size": 8.5,
-        "axes.labelsize": 10.5,
-        "xtick.labelsize": 8.0,
-        "ytick.labelsize": 8.0,
-        "legend.fontsize": 8.5,
+        "font.size": 12.0,
+        "axes.labelsize": 14.0,
+        "axes.titlesize": 14.0,
+        "xtick.labelsize": 12.0,
+        "ytick.labelsize": 12.0,
+        "legend.fontsize": 12.0,
         "legend.frameon": False,
         "axes.linewidth": 0.8,
         "xtick.major.width": 0.8,
@@ -71,7 +72,7 @@ def create_figure(input_path: Path, output_path: Path):
     grid = fig.add_gridspec(2, 1, height_ratios=(4.0, 1.0), hspace=0.0)
     ax_profile = fig.add_subplot(grid[0, 0])
     ax_error = fig.add_subplot(grid[1, 0], sharex=ax_profile)
-    fig.subplots_adjust(left=0.145, right=0.98, top=0.98, bottom=0.12, hspace=0.0)
+    fig.subplots_adjust(left=0.17, right=0.98, top=0.98, bottom=0.14, hspace=0.0)
 
     ax_profile.semilogx(radii, unsoft_norm, color="#222222", lw=2.0,
                         label="unsoftened multipole")
