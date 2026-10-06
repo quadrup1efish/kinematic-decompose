@@ -308,6 +308,26 @@ Composite::Composite(const std::vector<PtrPotential>& _components) :
 void Composite::evalCar(const coord::PosCar &pos,
     double* potential, coord::GradCar* deriv, coord::HessCar* deriv2, double time) const
 {
+    if(pos.x==0 && pos.y==0 && pos.z!=0 && !isZRotSymmetric(*this)) {
+        // Grouping cylindrical derivatives before conversion bypasses each
+        // component's regular Cartesian axis limit. Evaluate the components
+        // directly at this singular coordinate instead; keep the grouped
+        // fast path unchanged everywhere else (including axisymmetric axes).
+        if(potential) *potential=0;
+        if(deriv) coord::clear(*deriv);
+        if(deriv2) coord::clear(*deriv2);
+        for(size_t i=0; i<components.size(); i++) {
+            double value;
+            coord::GradCar grad;
+            coord::HessCar hess;
+            components[i]->eval(pos, potential ? &value : NULL,
+                deriv ? &grad : NULL, deriv2 ? &hess : NULL, time);
+            if(potential) *potential+=value;
+            if(deriv) coord::combine(*deriv, grad);
+            if(deriv2) coord::combine(*deriv2, hess);
+        }
+        return;
+    }
     evalComponents<coord::Cyl, coord::Sph>(
         components, componentTypes, pos, potential, deriv, deriv2, time);
 }

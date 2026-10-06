@@ -7,12 +7,15 @@ This directory contains the in-tree, narrowly scoped native backend for the pote
 The backend is intended to preserve the Agama contract used by this project:
 
 - `Multipole` construction from particles, including the native cubic-spline softened source;
-- `potential(xyz)` and `force(xyz)` in Agama's Cartesian array conventions;
+- `potential(xyz)`, `force(xyz)` and `density(xyz)` in Cartesian coordinates;
+- density queries reuse the existing Agama numerical core, return mass per volume in the active units, and accept a single `(3,)` point or an `(N,3)` array;
 - additive `Composite` potentials;
 - Agama-compatible Multipole INI export/load for supported Multipole and Composite objects.
 - Agama-compatible `setUnits`, `getUnits`, and `G` behavior for supported potential operations.
 
 This is not a replacement for the complete Agama Python package. It will not provide actions, distribution functions, orbit integration, or unrelated potential families. Compatibility is established by differential tests against the pinned Agama reference, not by matching names alone.
+
+Density queries do not clip negative densities or replace NaN/infinite values. Exact-origin extrapolation may return non-finite values. This backend fixes the upstream non-axisymmetric Multipole axis-force conversion and near-axis density cancellation. Cartesian axis derivatives are obtained from radial directional derivatives; the axis Laplacian projects onto the m=0 azimuthal harmonic. Within R/|z| <= epsilon^(1/3), density uses this axis limit to avoid cancellation roundoff. The polar endpoint second derivatives of the angular splines enforce C2 harmonic regularity; this changes non-axisymmetric interpolation in the cells touching the poles, while axisymmetric splines and other cells remain unchanged. Regression tests cover positive/negative axes, triaxial/non-symmetric expansions, softened/unsoftened sources and exterior forces without expected-failure markers. Cross-backend tests can use `AGAMA_REFERENCE_PYTHON` and `AGAMA_REFERENCE_PATH` to select a matching Agama interpreter/source build without loading both extensions in one process; an unpatched reference is not an oracle at the affected axes.
 
 ## Source provenance
 

@@ -23,7 +23,7 @@ def getUnits():
 def set_num_threads(num_threads: int = 1) -> None:
     """Set the number of threads used to evaluate a potential on many points.
 
-    Points are evaluated independently, so ``Potential.potential``/``.force``
+    Points are evaluated independently, so potential, force and density queries
     return identical values for any thread count -- only wall time changes.
     The default is 1 (single-threaded); arrays shorter than 4096 points always
     stay on one thread. Construction of a potential is always single-threaded,
@@ -74,6 +74,15 @@ class Potential:
 
     def force(self, xyz):
         return self._native.force(np.asarray(xyz, dtype=float))
+
+    def density(self, xyz):
+        """Evaluate the potential's density in the active mass/length**3 units.
+
+        A Cartesian point of shape (3,) returns a scalar; an (N,3) array
+        returns an (N,) array. This is the density implied by the potential
+        expansion, not the original particle density or a separate KDE.
+        """
+        return self._native.density(np.asarray(xyz, dtype=float))
 
     def export(self, filename):
         self._native.export(str(filename))

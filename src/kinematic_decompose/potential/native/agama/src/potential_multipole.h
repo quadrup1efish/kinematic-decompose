@@ -322,6 +322,9 @@ private:
     /// asymptotic behaviour at small and large radii described by `PowerLawMultipole`
     PtrPotential asymptInner, asymptOuter;
 
+    virtual void evalCar(const coord::PosCar &pos,
+        double* potential, coord::GradCar* deriv, coord::HessCar* deriv2, double time) const;
+
     virtual void evalCyl(const coord::PosCyl &pos,
         double* potential, coord::GradCyl* deriv, coord::HessCyl* deriv2, double /*time*/) const;
 

@@ -901,6 +901,10 @@ public:
         const IMatrixDense<double>& dfdy,
         const IMatrixDense<double>& d2fdxdy = Matrix<double>());
 
+    /** Enforce C2 polar regularity for an azimuthal harmonic of order m,
+        with y=tau=cos(theta)/(1+sin(theta)) on [-1,1]. */
+    void enforcePolarRegularity(unsigned int m);
+
     /** compute the value of spline and optionally its derivatives at point x,y */
     virtual void evalDeriv(double x, double y,
         double* value=NULL, double* deriv_x=NULL, double* deriv_y=NULL,

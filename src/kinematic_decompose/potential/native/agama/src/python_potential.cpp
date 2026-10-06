@@ -375,6 +375,29 @@ PtrPotential makeMultipole(
         gridSizeR, rmin*lengthUnit, rmax*lengthUnit);
 }
 
+py::object evaluateDensity(const PtrPotential& pot,
+    py::array_t<double, py::array::c_style | py::array::forcecast> points)
+{
+    const auto p=points.request();
+    const bool single=p.ndim==1 && p.shape[0]==3;
+    if(!single && (p.ndim!=2 || p.shape[1]!=3))
+        throw std::invalid_argument("coordinates must have shape (3,) or (N,3)");
+    const size_t n=single ? 1 : static_cast<size_t>(p.shape[0]);
+    const double* xyz=static_cast<const double*>(p.ptr);
+    // Agama evaluates density in internal G=1 units; convert mass/volume
+    // back to the caller's units, without an additional factor of G.
+    const double scale=lengthUnit*lengthUnit*lengthUnit/massUnit;
+    py::array_t<double> out(n);
+    double* result=out.mutable_data();
+    forEachPoint(n, evalThreads.load(), [&](size_t i) {
+        result[i]=pot->density(coord::PosCar(xyz[3*i]*lengthUnit,
+            xyz[3*i+1]*lengthUnit, xyz[3*i+2]*lengthUnit))*scale;
+    });
+    if(single)
+        return py::float_(result[0]);
+    return out;
+}
+
 py::array_t<double> evaluate(const PtrPotential& pot,
     py::array_t<double, py::array::c_style | py::array::forcecast> points, bool wantForce)
 {
@@ -451,6 +474,9 @@ PYBIND11_MODULE(_potential, m)
         })
         .def("force", [](const PotentialHandle& self, py::array_t<double, py::array::c_style | py::array::forcecast> xyz) {
             return evaluate(self.potential, xyz, true);
+        })
+        .def("density", [](const PotentialHandle& self, py::array_t<double, py::array::c_style | py::array::forcecast> xyz) {
+            return evaluateDensity(self.potential, xyz);
         })
         .def("export", [](const PotentialHandle& self, const std::string& path) {
             if(!writePotentialFile(path, *self.potential))

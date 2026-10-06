@@ -2519,6 +2519,44 @@ void Multipole::getCoefs(
     dPhi  = coefs[1];
 }
 
+void Multipole::evalCar(const coord::PosCar &pos,
+    double* potential, coord::GradCar* deriv, coord::HessCar* deriv2, double time) const
+{
+    if(pos.x!=0 || pos.y!=0 || pos.z==0 || isZRotSymmetric(*this)) {
+        BasePotentialCyl::evalCar(pos, potential, deriv, deriv2, time);
+        return;
+    }
+    if(!deriv && !deriv2) {
+        evalCyl(coord::PosCyl(0, pos.z, 0), potential, NULL, NULL, time);
+        return;
+    }
+    // At R=0 the cylindrical Jacobian is undefined. Cartesian first
+    // derivatives are instead the radial directional derivatives along x/y.
+    // Opposite meridians cancel odd angular interpolation residuals in the
+    // second derivatives, without displacing the evaluation point.
+    coord::GradCyl gx, gy;
+    coord::HessCyl hx, hy, hmx, hmy, hd, hmd;
+    evalCyl(coord::PosCyl(0, pos.z, 0), potential, &gx, deriv2 ? &hx : NULL, time);
+    evalCyl(coord::PosCyl(0, pos.z, M_PI/2), NULL, &gy, deriv2 ? &hy : NULL, time);
+    if(deriv) {
+        deriv->dx = gx.dR;
+        deriv->dy = gy.dR;
+        deriv->dz = gx.dz;
+    }
+    if(deriv2) {
+        evalCyl(coord::PosCyl(0, pos.z, M_PI), NULL, NULL, &hmx, time);
+        evalCyl(coord::PosCyl(0, pos.z, 3*M_PI/2), NULL, NULL, &hmy, time);
+        evalCyl(coord::PosCyl(0, pos.z, M_PI/4), NULL, NULL, &hd, time);
+        evalCyl(coord::PosCyl(0, pos.z, 5*M_PI/4), NULL, NULL, &hmd, time);
+        deriv2->dx2 = 0.5*(hx.dR2 + hmx.dR2);
+        deriv2->dy2 = 0.5*(hy.dR2 + hmy.dR2);
+        deriv2->dz2 = hx.dz2;
+        deriv2->dxdy = 0.5*(hd.dR2 + hmd.dR2 - deriv2->dx2 - deriv2->dy2);
+        deriv2->dxdz = hx.dRdz;
+        deriv2->dydz = hy.dRdz;
+    }
+}
+
 void Multipole::evalCyl(const coord::PosCyl &pos,
     double* potential, coord::GradCyl* deriv, coord::HessCyl* deriv2, double /*time*/) const
 {
@@ -2533,6 +2571,25 @@ void Multipole::evalCyl(const coord::PosCyl &pos,
 
 double Multipole::densityCyl(const coord::PosCyl &pos, double /*time*/) const
 {
+    if(pos.z!=0 && !isZRotSymmetric(*this) &&
+        pos.R <= fabs(pos.z)*std::cbrt(DBL_EPSILON)) {
+        // The axis Laplacian is 2*<Phi_RR>_phi + Phi_zz. The azimuthal
+        // average projects out every m!=0 term, avoiding cancellation of
+        // Phi_R/R against Phi_phiphi/R^2 (each may diverge separately).
+        // A periodic trapezoidal rule with >mmax nodes is exact for the
+        // finite Fourier expansion, including interpolation residuals.
+        // Use the axis limit when R/|z| <= epsilon^(1/3): this balances
+        // its O(R/|z|) truncation against O(epsilon*(z/R)^2) roundoff
+        // in the cylindrical Laplacian outside the branch.
+        const int nphi = 2*ind.mmax + 1;
+        double laplacian = 0;
+        for(int k=0; k<nphi; k++) {
+            coord::HessCyl hess;
+            evalCyl(coord::PosCyl(0, pos.z, 2*M_PI*k/nphi), NULL, NULL, &hess, 0);
+            laplacian += 2*hess.dR2 + hess.dz2;
+        }
+        return laplacian / (nphi * 4*M_PI);
+    }
     double rsq = pow_2(pos.R) + pow_2(pos.z);
     if(rsq < pow_2(gridRadii.front() * (1+GRID_SAFETY_FACTOR)))
         return asymptInner->density(pos);
@@ -2947,6 +3004,7 @@ MultipoleInterp2d::MultipoleInterp2d(
 
         // establish 2D quintic spline for Phi_m(ln(r), tau)
         spl[m+ind.mmax] = math::QuinticSpline2d(gridR, gridT, Phi_val, Phi_dR, Phi_dT, Phi_dRdT);
+        spl[m+ind.mmax].enforcePolarRegularity(absm);
     }
 }
 

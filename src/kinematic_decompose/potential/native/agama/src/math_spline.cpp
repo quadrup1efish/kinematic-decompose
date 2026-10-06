@@ -2440,6 +2440,26 @@ QuinticSpline2d::QuinticSpline2d(
     }
 }
 
+void QuinticSpline2d::enforcePolarRegularity(unsigned int m)
+{
+    if(yval.empty() || yval.front()!=-1 || yval.back()!=1)
+        throw std::invalid_argument("Polar regularity requires tau endpoints -1 and 1");
+    if(m==0 || m==2)
+        return;
+    // A smooth m=1 harmonic is sin(theta)*[A(x)+O(sin(theta)^2)].
+    // At tau=+/-1 this implies f_tautau=-tau*f_tau. Harmonics
+    // m>=3 vanish through second order. Enforce the same identity for
+    // the x derivatives so it holds between radial nodes as well.
+    for(size_t i=0; i<xval.size(); i++) {
+        for(size_t j=0; j<yval.size(); j+=yval.size()-1) {
+            size_t k=i*yval.size()+j;
+            fyy[k]   = m==1 ? -yval[j]*fy[k]   : 0;
+            fxyy[k]  = m==1 ? -yval[j]*fxy[k]  : 0;
+            fxxyy[k] = m==1 ? -yval[j]*fxxy[k] : 0;
+        }
+    }
+}
+
 // construct the spline in the case when we only have first derivatives, but no mixed second derivative
 void QuinticSpline2d::setupWoutMixedDeriv(const size_t xsize, const size_t ysize)
 {

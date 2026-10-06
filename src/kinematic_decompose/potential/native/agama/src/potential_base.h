@@ -235,13 +235,14 @@ class BasePotentialCar: public BasePotential, coord::IScalarFunction<coord::Car>
     It leaves the implementation of `evalCyl` member function for cylindrical coordinates undefined, 
     but provides the conversion from cylindrical to cartesian and spherical coordinates. */
 class BasePotentialCyl: public BasePotential, coord::IScalarFunction<coord::Cyl>{
-
+protected:
     /** evaluate potential and up to two its derivatives in cartesian coordinates. */
     virtual void evalCar(const coord::PosCar &pos,
         double* potential, coord::GradCar* deriv, coord::HessCar* deriv2, double time) const {
         coord::evalAndConvert<coord::Cyl, coord::Car>(*this, pos, potential, deriv, deriv2, time);
     }
 
+private:
     /** evaluate potential and up to two its derivatives in spherical coordinates. */
     virtual void evalSph(const coord::PosSph &pos,
         double* potential, coord::GradSph* deriv, coord::HessSph* deriv2, double time) const {
