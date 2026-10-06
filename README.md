@@ -269,11 +269,26 @@ All figures share a unified **Nature-journal style** (`NATURE_STYLE` in `visuali
 
 The analytic truncated-Plummer benchmarks can be reproduced with `uv run --no-sync python tests/example_potential_performance.py` and `uv run --no-sync python tests/example_potential_grid_convergence.py`. They generate the [particle-count scaling](images/potential_performance_scaling.png) and [radial-grid convergence](images/potential_grid_convergence.png) figures.
 
-The scaling run uses 13 logarithmic particle counts from $10^5$ to $10^7$ and nine build timings per count. Native uses $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$; stock Agama is unsoftened. The measured finite-range log-log slopes are 0.91656 (Native) and 0.94223 (Agama), not claims about asymptotic complexity. Errors are compared with the unsoftened analytic Plummer field, so Native's error includes its intentional softening difference.
+The left panel uses 13 logarithmic particle counts from $10^5$ to $10^7$ and nine build timings per count. Native uses $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$; Agama is unsoftened. The measured finite-range log-log slopes are 0.82349 (Native) and 0.94839 (Agama), not claims about asymptotic complexity. The right panel compares the analytic truncated-Plummer potential with the two particle-built potentials as $\Phi/\Phi_{\min}$ versus radius, using the same $N=10^7$ realization and the common analytic $\Phi_{\min}=\Phi_{\rm analytic}(0)$. Native retains its intentional softening difference. Set `AGAMA_PYTHON` if Agama is installed in a separate Python environment.
 
 The grid study fixes one $N=10^6$ realization and tests `gridSizeR` = 15, 30, 60, 120, 240. Convergence is measured against the finest tested grid, not an exact continuum solution; analytic errors use method-matched targets. Between 120 and 240, the Agama radial-force change has a 95th percentile of $6.53\times10^{-3}$, so its force-error tail is not fully grid-converged.
 
+The separate [non-spherical analytic-field figure](images/potential_analytic_models.png) uses Agama's `MiyamotoNagai` and triaxial `Ferrers` analytic potential-density pairs. Reproduce it with `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py`; permanent regressions are in `tests/test_potential_analytic_models.py`. Deterministic weighted density-quadrature sources are checked at three orders, two radial grids and two harmonic orders, with an independent MN domain sweep and direct-source diagnostics. MN symmetry-plane and symmetry-axis and Ferrers x/y/z profiles share their respective analytic central normalizations; off-axis probes additionally check angular errors. The Plummer timing benchmark remains unchanged.
+
 ## Testing
+
+Run the collected regression suite with `python -m pytest tests -q -rs`.
+For optional out-of-process references, set `AGAMA_PYTHON` (analytic models)
+and `AGAMA_REFERENCE_PYTHON` (INI/evaluator compatibility) to an Agama-enabled
+interpreter. Compatibility checks share exported coefficients and compare the
+unchanged off-axis evaluation domain; they do not assert identical particle
+fits or reproduce the old reference's origin/axis behavior. Native density,
+force-gradient, Cartesian Hessian and near-axis boundary tests validate those
+repaired paths independently. Historical cross-binary optimization tests need
+`MULTIPOLE_BASELINE_BINARY` pointing to the appropriate pre-change extension;
+without it they are skipped, not verified.
+
+Additional explicitly selected algorithm examples:
 
 ```bash
 python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q

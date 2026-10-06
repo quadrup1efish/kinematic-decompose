@@ -33,3 +33,6 @@ kinematic-decompose = "kinematic_decompose:main"
 [build-system]
 requires = ["setuptools==82.0.1", "wheel==0.41.2", "pybind11==2.13.6"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+markers = ["slow: end-to-end tests using real galaxy data"]

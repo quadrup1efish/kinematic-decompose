@@ -268,11 +268,24 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 
 解析截断 Plummer 基准可分别用 `uv run --no-sync python tests/example_potential_performance.py` 和 `uv run --no-sync python tests/example_potential_grid_convergence.py` 复现；脚本生成[粒子数缩放图](images/potential_performance_scaling.png)和[径向网格收敛图](images/potential_grid_convergence.png)。
 
-缩放测试使用 $10^5$ 至 $10^7$ 的 13 个对数粒子数，每个粒子数重复构建 9 次。Native 使用 $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$，stock Agama 不使用 softening。有限区间内测得的 log-log 斜率分别为 0.91656（Native）和 0.94223（Agama），不代表渐近复杂度。误差相对于未软化 Plummer 解析场计算，因此 Native 的误差包含其有意引入的软化差异。
+左图使用 $10^5$ 至 $10^7$ 的 13 个对数粒子数，每个粒子数重复构建 9 次。Native 使用 $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$，Agama 不使用 softening。有限区间内测得的 log-log 斜率分别为 0.82349（Native）和 0.94839（Agama），不代表渐近复杂度。右图固定同一组 $N=10^7$ 粒子，以半径为横轴、$\Phi/\Phi_{\min}$ 为纵轴，对比截断 Plummer 解析势与两种粒子构建势；半径轴为对数刻度，不显示网格，子图内仅标注粒子数 $N$。三条曲线共用解析模型的 $\Phi_{\min}=\Phi_{\rm analytic}(0)$。Native 保留其有意引入的软化差异。Agama 安装在独立环境时可通过 `AGAMA_PYTHON` 指定其解释器。
 
 网格测试固定同一组 $N=10^6$ 粒子，扫描 `gridSizeR` = 15、30、60、120、240。收敛变化以最高测试网格为参照，并非精确连续解；误差图则使用与方法相匹配的解析目标。`gridSizeR=120` 到 240 时，Agama 径向力变化的第 95 百分位为 $6.53\times10^{-3}$，因此力误差尾部尚未完全收敛。
 
+新增独立的[非球对称解析势场验证图](images/potential_analytic_models.png)，参考 Agama 自带的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型。使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py` 复现，永久回归在 `tests/test_potential_analytic_models.py`。确定性加权密度求积分别检查三阶源点分辨率、两种径向网格和两种谐波阶数，并独立检查 MN 积分域及直接源点引力。MN 对称面/对称轴、Ferrers x/y/z 主轴分别标注，同一模型共用解析中心势归一化，另有非主轴方向误差检查；原有 Plummer 耗时基准保持不变。
+
 ## 测试
+
+使用 `python -m pytest tests -q -rs` 运行自动收集的回归测试。
+可选的进程隔离参考测试通过 `AGAMA_PYTHON`（解析模型）和
+`AGAMA_REFERENCE_PYTHON`（INI/求值兼容性）指定安装 Agama 的解释器。
+兼容性测试共享导出的系数，只比较未改变的离轴求值区域，不要求粒子拟合
+逐位相同，也不复现旧参考实现的原点/轴线行为。修复路径由本地密度、
+势梯度、Cartesian Hessian 和近轴分支边界测试独立验证。
+历史优化的跨二进制回归需要将 `MULTIPOLE_BASELINE_BINARY` 指向相应修改前
+的扩展；未提供时会跳过，不代表已验证。
+
+另外可显式选择以下算法示例：
 
 ```bash
 python -m pytest tests/example_gaussian_mixture.py tests/example_eoemin_cut.py tests/example_batch_size.py -q

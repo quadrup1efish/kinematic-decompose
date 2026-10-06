@@ -83,7 +83,7 @@ def time_stock_agama(positions, masses, rmax, query, scratch_dir):
     np.savez(input_path, positions=positions, masses=masses,
              query_radii=query[:, 0])
     result = subprocess.run(
-        [sys.executable, str(worker), str(input_path), str(REPEATS),
+        [os.environ.get("AGAMA_PYTHON", sys.executable), str(worker), str(input_path), str(REPEATS),
          str(RMIN_KPC), str(rmax)],
         check=True, capture_output=True, text=True,
     )
@@ -122,6 +122,25 @@ def error_summary(model, truth):
     return {"p16": float(p16), "median": float(median), "p84": float(p84)}
 
 
+def radial_energy_profile(rows):
+    """Static probes: e=Phi; use one analytic central energy for all curves."""
+    row = max(rows, key=lambda item: item["n_particles"])
+    radii = np.geomspace(0.05 * PLUMMER_SCALE_KPC,
+                        PLUMMER_TRUNCATION_KPC, ERROR_PROBE_COUNT)
+    truth, _ = analytic_plummer(radii)
+    phi_min = float(analytic_plummer(np.zeros(1))[0][0])
+    return {
+        "n_particles": row["n_particles"],
+        "softening_support_kpc": row["softening_support_kpc"],
+        "radii_kpc": radii.tolist(),
+        "phi_min_km2_s2": phi_min,
+        "definition": "common potential normalization: Phi_min=Phi_analytic(0)",
+        "analytic": (truth / phi_min).tolist(),
+        "native": (np.asarray(row["native"]["potential_probe"]) / phi_min).tolist(),
+        "agama": (np.asarray(row["agama"]["potential_probe"]) / phi_min).tolist(),
+    }
+
+
 def save_scaling_figure(rows):
     plt.rcParams.update({
         "font.family": "serif",
@@ -137,7 +156,7 @@ def save_scaling_figure(rows):
                                      gridspec_kw={"width_ratios": [1, 1]})
     styles = [
         ("native", "#303030", "o", "Native softened"),
-        ("agama", "#e87500", "s", "Stock Agama, unsoftened"),
+        ("agama", "#e87500", "s", "Agama, unsoftened"),
     ]
     exponents = {}
     ordered = sorted(rows, key=lambda row: row["n_particles"])
@@ -148,15 +167,15 @@ def save_scaling_figure(rows):
         hi = np.asarray([row[key]["build_p84_s"] for row in ordered])
         errors = np.vstack((med - lo, hi - med))
         ax.errorbar(n, med, yerr=errors, color=color, marker=marker,
-                    linestyle="none", linewidth=1.1, markersize=5.5,
-                    capsize=2.5, elinewidth=1.0, zorder=3)
-        ax.plot(n, med, color=color, linewidth=1.05, alpha=0.7, zorder=2)
+                    linestyle="none", linewidth=1.4, markersize=6,
+                    capsize=2.5, elinewidth=1.3, zorder=3)
+        ax.plot(n, med, color=color, linewidth=1.6, alpha=0.8, zorder=2)
         high_n = n > MIN_PARTICLES
         exponent, intercept = np.polyfit(np.log(n[high_n]), np.log(med[high_n]), 1)
         exponents[key] = float(exponent)
         fit_n = np.geomspace(n[high_n][0], n[high_n][-1], 60)
         ax.loglog(fit_n, np.exp(intercept) * fit_n**exponent,
-                  linestyle="--", color=color, linewidth=1.7,
+                  linestyle="--", color=color, linewidth=2.1,
                   alpha=0.8, zorder=1)
         fit_end = float(np.exp(intercept) * MAX_PARTICLES**exponent)
         ax.annotate(rf"$\alpha={exponent:.2f}$",
@@ -174,34 +193,34 @@ def save_scaling_figure(rows):
     ax.text(0.035, 0.79,
             "Fixed grid and $l_{\\max}=0$; expected cost $O(N)$",
             transform=ax.transAxes, ha="left", va="top", color="0.3", fontsize=9)
-    ax.grid(True, which="major", color="0.72", linestyle="--", alpha=0.55, linewidth=0.8)
-    ax.grid(True, which="minor", color="0.82", linestyle="--", alpha=0.35, linewidth=0.65)
-    error_styles = [
-        ("native", "potential_error", "#303030", "o", "-", r"Native $|\Delta\Phi/\Phi|$"),
-        ("agama", "potential_error", "#e87500", "s", "-", r"Agama $|\Delta\Phi/\Phi|$"),
-        ("native", "force_error", "#303030", "^", "--", r"Native $|\Delta F_r/F_r|$"),
-        ("agama", "force_error", "#e87500", "v", "--", r"Agama $|\Delta F_r/F_r|$"),
-    ]
-    for backend, metric, color, marker, linestyle, label in error_styles:
-        med = np.asarray([row[backend][metric]["median"] for row in ordered])
-        err_ax.plot(n, med, color=color, marker=marker, linestyle=linestyle,
-                    linewidth=1.35, markersize=4.2, label=label)
+
+    profile = radial_energy_profile(rows)
+    radii = np.asarray(profile["radii_kpc"])
+    analytic_radii = np.geomspace(radii[0], PLUMMER_TRUNCATION_KPC, 512)
+    analytic_phi, _ = analytic_plummer(analytic_radii)
+    err_ax.plot(analytic_radii, analytic_phi / profile["phi_min_km2_s2"],
+                color="#238b45", linewidth=3.2, label="Analytic truncated Plummer")
+    err_ax.plot(radii, profile["native"], color="#303030", linestyle="--",
+                marker="o", markevery=6, markerfacecolor="none", markersize=5,
+                linewidth=2.2, label="Native softened")
+    err_ax.plot(radii, profile["agama"], color="#e87500", linestyle=":",
+                marker="s", markevery=8, markerfacecolor="none", markersize=5,
+                linewidth=2.2, label="Agama, unsoftened")
     err_ax.set_xscale("log")
-    err_ax.set_yscale("log")
-    err_ax.set_xlim(MIN_PARTICLES, MAX_PARTICLES)
-    err_ax.set_xlabel(r"Number of particles, $N_{\mathrm{part}}$")
-    error_medians = [row[backend][metric]["median"]
-                     for row in ordered for backend, metric, *_ in error_styles]
-    err_ax.set_ylim(max(min(error_medians) * 0.5, 1e-8), max(error_medians) * 2)
-    err_ax.set_ylabel("Median absolute relative error")
+    err_ax.set_xlim(radii[0], PLUMMER_TRUNCATION_KPC)
+    err_ax.set_ylim(0., 1.03)
+    err_ax.set_xlabel(r"Radius, $r$ [kpc]")
+    err_ax.set_ylabel(r"$\Phi/\Phi_{\min}$")
+    err_ax.text(0.97, 0.97,
+                r"$N=" + "{:.0e}$".format(profile["n_particles"]),
+                transform=err_ax.transAxes, fontsize=10, color="0.3",
+                va="top", ha="right")
     err_ax.text(0.04, 0.025,
-                "Median over $r=0.05$–$10$ kpc\n"
-                "$h(N)=0.2\\,\\mathrm{kpc}(1000/N)^{1/3}$; Native includes softening bias.",
-                transform=err_ax.transAxes, fontsize=7.7, color="0.3",
-                va="bottom")
-    err_ax.legend(frameon=False, fontsize=8, loc="upper right", ncol=1)
-    err_ax.grid(True, which="major", color="0.72", linestyle="--", alpha=0.55, linewidth=0.8)
-    err_ax.grid(True, which="minor", color="0.82", linestyle="--", alpha=0.35, linewidth=0.65)
+                r"common $\Phi_{\min}=\Phi_{\rm analytic}(0)$",
+                transform=err_ax.transAxes, fontsize=9, color="0.3", va="bottom")
+    err_ax.legend(frameon=False, fontsize=10, loc="lower left",
+                  bbox_to_anchor=(0.03, 0.16))
+
     fig.tight_layout()
     default_path = Path(__file__).resolve().parents[1] / "images" / "potential_performance_scaling.png"
     path = os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", str(default_path))
@@ -291,6 +310,7 @@ def main():
         "asymptotic_complexity_at_fixed_grid_lmax": "O(N) for both particle-source builders",
         "measured_loglog_slope_N_gt_1e5": exponents,
         "figure": figure,
+        "radial_energy_profile": radial_energy_profile(rows),
         "by_particle_count": rows,
     }, indent=2))
 
