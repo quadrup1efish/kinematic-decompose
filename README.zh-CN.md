@@ -266,13 +266,13 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 
 ## 引力势构建基准测试
 
-解析截断 Plummer 基准可分别用 `uv run --no-sync python tests/example_potential_performance.py` 和 `uv run --no-sync python tests/example_potential_grid_convergence.py` 复现；脚本生成[粒子数缩放图](images/potential_performance_scaling.png)和[径向网格收敛图](images/potential_grid_convergence.png)。
+纯构建性能基准使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_performance.py` 复现。[单张性能图](images/potential_performance_scaling.png)只展示构建耗时随 $N$ 的变化，两组图例均放在坐标轴内部，不再测试势或力查询耗时。解析精度和径向网格收敛独立留在 `tests/example_potential_grid_convergence.py` 与 `tests/example_potential_analytic.py`。
 
-左图使用 $10^5$ 至 $10^7$ 的 13 个对数粒子数，每个粒子数重复构建 9 次。Native 使用 $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$，Agama 不使用 softening。有限区间内测得的 log-log 斜率分别为 0.82349（Native）和 0.94839（Agama），不代表渐近复杂度。右图固定同一组 $N=10^7$ 粒子，以半径为横轴、$\Phi/\Phi_{\min}$ 为纵轴，对比截断 Plummer 解析势与两种粒子构建势；半径轴为对数刻度，不显示网格，子图内仅标注粒子数 $N$。三条曲线共用解析模型的 $\Phi_{\min}=\Phi_{\rm analytic}(0)$。Native 保留其有意引入的软化差异。Agama 安装在独立环境时可通过 `AGAMA_PYTHON` 指定其解释器。
+图中覆盖球对称（`s`，lmax=mmax=0）、轴对称（`a`，lmax=4、mmax=0）、三轴对称（`t`，lmax=mmax=4）和无对称（`n`，lmax=mmax=4），共用同一随机种子的三轴源粒子样本。颜色区分对称性，两种方法的图例仅写 `this work` 和 `Agama`。只测试带软化的本地方法，排除本地无软化版本。默认扫描 $10^5$ 至 $10^7$ 的 7 个源粒子数；固定 `gridSizeR=30`、spline 支撑半径 $h=0.02$ kpc，每组预热一次后重复 5 次。worker 串行、单线程运行；计时排除导入、I/O、预热与对象析构。误差棒仅表示耗时的 16--84 百分位范围，不表示势场误差或置信区间。Agama 使用其标准粒子构建接口，不同核的速度对照不等于物理精度相同。方图不添加标题或参数说明，横轴标签仅写 $N$。可用 `--native-only` 排除外部 Agama，或 `--plot-only --results <saved-json>` 从缓存重绘；读取旧缓存时保留原始构建计时并排除查询数据。原始耗时、输入哈希和二进制来源默认保存于仓库外；性能脚本不再包含势剖面或精度统计。
 
 网格测试固定同一组 $N=10^6$ 粒子，扫描 `gridSizeR` = 15、30、60、120、240。收敛变化以最高测试网格为参照，并非精确连续解；误差图则使用与方法相匹配的解析目标。`gridSizeR=120` 到 240 时，Agama 径向力变化的第 95 百分位为 $6.53\times10^{-3}$，因此力误差尾部尚未完全收敛。
 
-新增独立的[非球对称解析势场验证图](images/potential_analytic_models.png)，参考 Agama 自带的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型。使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py` 复现，永久回归在 `tests/test_potential_analytic_models.py`。确定性加权密度求积分别检查三阶源点分辨率、两种径向网格和两种谐波阶数，并独立检查 MN 积分域及直接源点引力。MN 对称面/对称轴、Ferrers x/y/z 主轴分别标注，同一模型共用解析中心势归一化，另有非主轴方向误差检查；原有 Plummer 耗时基准保持不变。
+新增独立的[非球对称解析势场验证图](images/potential_analytic_models.png)，参考 Agama 自带的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型。使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py` 复现，永久回归在 `tests/test_potential_analytic_models.py`。确定性加权密度求积分别检查三阶源点分辨率、两种径向网格和两种谐波阶数，并独立检查 MN 积分域及直接源点引力。MN 对称面/对称轴、Ferrers x/y/z 主轴分别标注，同一模型共用解析中心势归一化，另有非主轴方向误差检查。
 
 ## 测试
 
@@ -282,8 +282,10 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 兼容性测试共享导出的系数，只比较未改变的离轴求值区域，不要求粒子拟合
 逐位相同，也不复现旧参考实现的原点/轴线行为。修复路径由本地密度、
 势梯度、Cartesian Hessian 和近轴分支边界测试独立验证。
-历史优化的跨二进制回归需要将 `MULTIPOLE_BASELINE_BINARY` 指向相应修改前
-的扩展；未提供时会跳过，不代表已验证。
+测试套件不再包含依赖未指定历史二进制的一次性优化对照。
+当前 skew-t/KDE 回归在 `tests/test_skew_t_ecut.py`；`get_Ecut` 仍用于不可分辨
+成分的 fallback，由 `tests/example_eoemin_cut.py` 覆盖。
+Skew-normal 测试仍验证独立公开的 `SkewNormalMixtures` 接口。
 
 另外可显式选择以下算法示例：
 

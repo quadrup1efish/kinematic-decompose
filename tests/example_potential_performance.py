@@ -1,318 +1,217 @@
 #!/usr/bin/env python3
-"""Benchmark softened Multipole construction versus stock Agama on a Plummer model.
+"""Performance-only Multipole benchmark: construction versus particle count.
 
-The stock Agama and project-native extensions are measured in separate processes:
-loading both native libraries together can collide at the symbol level.
+No analytic reference, field profile, accuracy metric or speed assertion belongs
+here. Native and stock Agama run serially in separate processes. Timed regions
+exclude imports, input generation, disk I/O, warmup and destruction.
 """
-
-import gc
-import json
 import os
+
+THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS")
+for variable in THREAD_VARIABLES:
+    os.environ[variable] = "1"
+
+import argparse
+import json
+from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
-from time import perf_counter
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import numpy as np
 
-from kinematic_decompose.potential import Potential, setUnits
-
-GRID_SIZE_R = 30
-REPEATS = 9
-MIN_PARTICLES = 100_000
-MAX_PARTICLES = 10_000_000
-N_LOG_SAMPLES = 13
-PLUMMER_SCALE_KPC = 1.0
-PLUMMER_TRUNCATION_KPC = 10.0
-PLUMMER_TOTAL_MASS_MSUN = 1.0e10
-RMIN_KPC = 1.0e-3
-SOFTENING_AT_REFERENCE_KPC = 0.2
-SOFTENING_REFERENCE_N = 1_000
-ERROR_PROBE_COUNT = 64
+SYMMETRIES = {
+    "s": {"label": "Spherical", "lmax": 0, "mmax": 0, "color": "#333333"},
+    "a": {"label": "Axisymmetric", "lmax": 4, "mmax": 0, "color": "#0072B2"},
+    "t": {"label": "Triaxial", "lmax": 4, "mmax": 4, "color": "#D55E00"},
+    "n": {"label": "No symmetry", "lmax": 4, "mmax": 4, "color": "#009E73"},
+}
+BACKENDS = {
+    "native_softened": ("this work", "-", "o"),
+    "agama": ("Agama", "--", "s"),
+}
+OPERATIONS = ("build",)
 
 
-def summarize(times):
-    values = np.asarray(times, dtype=float)
-    p16, median, p84 = np.percentile(values, [16, 50, 84])
-    return {
-        "build_times_s": values.tolist(),
-        "build_p16_s": float(p16),
-        "build_median_s": float(median),
-        "build_p84_s": float(p84),
-    }
+def logarithmic_counts(low, high, samples):
+    if low < 1 or high < low or samples < 1:
+        raise ValueError("Require 1 <= minimum <= maximum and positive sample count")
+    return np.unique(np.rint(np.geomspace(low, high, samples)).astype(int)).tolist()
 
 
-def time_native(positions, masses, support, rmax, query):
-    times = []
-    for _ in range(REPEATS):
-        start = perf_counter()
-        potential = Potential(
-            type="Multipole",
-            particles=(positions, masses),
-            softening=support,
-            symmetry="s",
-            lmax=0,
-            mmax=0,
-            rmin=RMIN_KPC,
-            rmax=rmax,
-            gridSizeR=GRID_SIZE_R,
-        )
-        times.append(perf_counter() - start)
-        del potential
-        gc.collect()
-    potential = Potential(
-        type="Multipole", particles=(positions, masses), softening=support,
-        symmetry="s", lmax=0, mmax=0, rmin=RMIN_KPC, rmax=rmax,
-        gridSizeR=GRID_SIZE_R,
-    )
-    phi = np.asarray(potential.potential(query), dtype=float).reshape(-1)
-    force = np.asarray(potential.force(query), dtype=float)
-    result = summarize(times)
-    result["potential_probe"] = phi.tolist()
-    result["radial_force_probe"] = force[:, 0].tolist()
-    return result
+def source_sample(count, seed):
+    """Common reflection-symmetric triaxial Gaussian in expectation, not truth."""
+    rng = np.random.default_rng(seed)
+    return np.ascontiguousarray(rng.normal(size=(count, 3)) * [1.0, 0.7, 0.4])
 
 
-def time_stock_agama(positions, masses, rmax, query, scratch_dir):
-    worker = Path(__file__).with_name("_agama_potential_performance_worker.py")
-    input_path = Path(scratch_dir) / "agama_benchmark_input.npz"
-    np.savez(input_path, positions=positions, masses=masses,
-             query_radii=query[:, 0])
-    result = subprocess.run(
-        [os.environ.get("AGAMA_PYTHON", sys.executable), str(worker), str(input_path), str(REPEATS),
-         str(RMIN_KPC), str(rmax)],
-        check=True, capture_output=True, text=True,
-    )
+def run_worker(input_path, config):
+    python = os.environ.get("AGAMA_PYTHON", sys.executable) if config["backend"] == "agama" else sys.executable
+    worker = Path(__file__).with_name("_potential_performance_worker.py")
+    env = os.environ.copy()
+    env.update({name: "1" for name in THREAD_VARIABLES})
+    result = subprocess.run([python, str(worker), str(input_path), json.dumps(config)],
+                            env=env, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError("Benchmark worker failed:\n" + result.stderr)
     output = json.loads(result.stdout)
-    summary = summarize(output["build_times_s"])
-    summary["potential_probe"] = output["potential"]
-    summary["radial_force_probe"] = output["radial_force"]
-    return summary
+    if output["config"] != config:
+        raise ValueError("Worker configuration does not match the requested case")
+    if any(value != "1" for value in output["runtime"]["threads"].values()):
+        raise ValueError("Worker thread limits are not controlled")
+    return output
 
 
-def analytic_plummer(radii):
-    """Potential and inward radial-force magnitude of the truncated Plummer model."""
-    radii = np.asarray(radii, dtype=float)
-    scale = PLUMMER_SCALE_KPC
-    truncation = PLUMMER_TRUNCATION_KPC
-    enclosed_fraction = (truncation / np.sqrt(truncation**2 + scale**2))**3
-    source_mass = PLUMMER_TOTAL_MASS_MSUN / enclosed_fraction
-    g = 4.30091727067736e-6  # kpc (km/s)^2 / Msun
-    inside = radii <= truncation
-    phi = np.empty_like(radii)
-    force = np.empty_like(radii)
-    boundary_term = scale**2 / (truncation**2 + scale**2)**1.5
-    phi[inside] = -g * source_mass * (
-        1 / np.sqrt(radii[inside]**2 + scale**2) - boundary_term
-    )
-    force[inside] = -(g * source_mass * radii[inside]
-                      / (radii[inside]**2 + scale**2)**1.5)
-    phi[~inside] = -g * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]
-    force[~inside] = -g * PLUMMER_TOTAL_MASS_MSUN / radii[~inside]**2
-    return phi, force
+def validate_results(report):
+    config = report["configuration"]
+    rows = report["rows"]
+    actual = [(row["operation"], row["symmetry"], row["backend"], row["size"]) for row in rows]
+    expected = {(op, sym, backend, count)
+                for op in OPERATIONS for sym in SYMMETRIES for backend in config["backends"]
+                for count in config["particle_counts"]}
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        raise ValueError("Missing, duplicated or unexpected benchmark cases")
+    for row in rows:
+        times = np.asarray(row["times_s"], dtype=float)
+        if len(times) != config["repeats"] or not np.isfinite(times).all() or np.any(times <= 0):
+            raise ValueError("Invalid raw timing samples")
+        np.testing.assert_allclose([row["p16_s"], row["median_s"], row["p84_s"]],
+                                   np.percentile(times, [16, 50, 84]), rtol=1e-14)
+    if len(report["workers"]) != len(SYMMETRIES) * len(config["backends"]) * len(config["particle_counts"]):
+        raise ValueError("Incomplete worker provenance")
 
 
-def error_summary(model, truth):
-    absolute_relative = np.abs(np.asarray(model) - truth) / np.abs(truth)
-    p16, median, p84 = np.percentile(absolute_relative, [16, 50, 84])
-    return {"p16": float(p16), "median": float(median), "p84": float(p84)}
+def benchmark(args):
+    particle_counts = logarithmic_counts(args.min_particles, args.max_particles, args.particle_samples)
+    backends = [name for name in BACKENDS if name != "agama" or not args.native_only]
+    config = {"particle_counts": particle_counts, "backends": backends,
+              "repeats": args.repeats, "grid_size": args.grid_size, "support_kpc": args.support,
+              "rmin_kpc": 0.001, "rmax_kpc": 30.0, "seed": args.seed,
+              "symmetries": SYMMETRIES, "threads": 1,
+
+              "source_distribution": "Gaussian axes (1,0.7,0.4) kpc; fixed total mass 1e10 Msun",
+              "timing_scope": "public constructor only; one warmup per case; destruction excluded",
+              "comparison_scope": "matched inputs/configurations, not equal-accuracy certification"}
+    report = {"configuration": config, "rows": [], "workers": []}
+    sources = source_sample(max(particle_counts), args.seed)
+    scratch_root = Path(os.environ.get("TMPDIR", Path.home() / ".hermes/cache/scratch"))
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="potential-performance-", dir=scratch_root) as scratch:
+        input_path = Path(scratch) / "input.npz"
+        for index, count in enumerate(particle_counts):
+            np.savez(input_path, positions=sources[:count], masses=np.full(count, 1e10 / count))
+            identity = None
+            for symmetry, spec in SYMMETRIES.items():
+                order = backends if index % 2 == 0 else backends[::-1]
+                for backend in order:
+                    worker_config = {"stage": "build", "backend": backend, "symmetry": symmetry,
+                                     "lmax": spec["lmax"], "mmax": spec["mmax"],
+                                     "grid_size": args.grid_size, "rmin": 0.001, "rmax": 30.0,
+                                     "support": args.support, "repeats": args.repeats}
+                    result = run_worker(input_path, worker_config)
+                    hashes = tuple(result[key] for key in ("source_sha256", "mass_sha256"))
+                    if identity is not None and hashes != identity:
+                        raise ValueError("Input digests differ across symmetry/backend cases")
+                    identity = hashes
+                    report["workers"].append({key: value for key, value in result.items() if key != "results"})
+                    for row in result["results"]:
+                        report["rows"].append({"symmetry": symmetry, "backend": backend, **row})
+            args.results.parent.mkdir(parents=True, exist_ok=True)
+            args.results.write_text(json.dumps(report, indent=2))
+            print("Completed build N=" + str(count), flush=True)
+    validate_results(report)
+    return report
 
 
-def radial_energy_profile(rows):
-    """Static probes: e=Phi; use one analytic central energy for all curves."""
-    row = max(rows, key=lambda item: item["n_particles"])
-    radii = np.geomspace(0.05 * PLUMMER_SCALE_KPC,
-                        PLUMMER_TRUNCATION_KPC, ERROR_PROBE_COUNT)
-    truth, _ = analytic_plummer(radii)
-    phi_min = float(analytic_plummer(np.zeros(1))[0][0])
-    return {
-        "n_particles": row["n_particles"],
-        "softening_support_kpc": row["softening_support_kpc"],
-        "radii_kpc": radii.tolist(),
-        "phi_min_km2_s2": phi_min,
-        "definition": "common potential normalization: Phi_min=Phi_analytic(0)",
-        "analytic": (truth / phi_min).tolist(),
-        "native": (np.asarray(row["native"]["potential_probe"]) / phi_min).tolist(),
-        "agama": (np.asarray(row["agama"]["potential_probe"]) / phi_min).tolist(),
-    }
+def load_build_measurements(path):
+    """Extract original construction measurements from a legacy mixed cache."""
+    report = json.loads(Path(path).read_text())
+    if any(row["operation"] != "build" for row in report["rows"]):
+        report["rows"] = [row for row in report["rows"] if row["operation"] == "build"]
+        report["workers"] = [worker for worker in report["workers"]
+                             if worker["config"]["stage"] == "build"]
+        for key in ("query_counts", "query_source_particles", "query_distribution"):
+            report["configuration"].pop(key, None)
+        report["configuration"]["timing_scope"] = "public constructor only; one warmup per case; destruction excluded"
+        report["source_measurements"] = str(Path(path).resolve())
+    validate_results(report)
+    return report
 
 
-def save_scaling_figure(rows):
-    plt.rcParams.update({
-        "font.family": "serif",
-        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
-        "mathtext.fontset": "stix",
-        "font.size": 12,
-        "axes.labelsize": 14,
-        "xtick.labelsize": 10,
-        "ytick.labelsize": 10,
-        "legend.fontsize": 9,
-    })
-    fig, (ax, err_ax) = plt.subplots(1, 2, figsize=(12.4, 5.2),
-                                     gridspec_kw={"width_ratios": [1, 1]})
-    styles = [
-        ("native", "#303030", "o", "Native softened"),
-        ("agama", "#e87500", "s", "Agama, unsoftened"),
-    ]
-    exponents = {}
-    ordered = sorted(rows, key=lambda row: row["n_particles"])
-    n = np.asarray([row["n_particles"] for row in ordered], dtype=float)
-    for key, color, marker, label in styles:
-        med = np.asarray([row[key]["build_median_s"] for row in ordered])
-        lo = np.asarray([row[key]["build_p16_s"] for row in ordered])
-        hi = np.asarray([row[key]["build_p84_s"] for row in ordered])
-        errors = np.vstack((med - lo, hi - med))
-        ax.errorbar(n, med, yerr=errors, color=color, marker=marker,
-                    linestyle="none", linewidth=1.4, markersize=6,
-                    capsize=2.5, elinewidth=1.3, zorder=3)
-        ax.plot(n, med, color=color, linewidth=1.6, alpha=0.8, zorder=2)
-        high_n = n > MIN_PARTICLES
-        exponent, intercept = np.polyfit(np.log(n[high_n]), np.log(med[high_n]), 1)
-        exponents[key] = float(exponent)
-        fit_n = np.geomspace(n[high_n][0], n[high_n][-1], 60)
-        ax.loglog(fit_n, np.exp(intercept) * fit_n**exponent,
-                  linestyle="--", color=color, linewidth=2.1,
-                  alpha=0.8, zorder=1)
-        fit_end = float(np.exp(intercept) * MAX_PARTICLES**exponent)
-        ax.annotate(rf"$\alpha={exponent:.2f}$",
-                    xy=(MAX_PARTICLES, fit_end), xytext=(-5, 4 if key == "native" else -9),
-                    textcoords="offset points", ha="right", va="center",
-                    color=color, fontsize=10)
+def save_scaling_figure(report, path):
+    validate_results(report)
+    plt.rcParams.update({"font.family": "serif",
+                         "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+                         "mathtext.fontset": "stix", "font.size": 14,
+                         "axes.labelsize": 19, "xtick.labelsize": 16, "ytick.labelsize": 16,
+                         "legend.fontsize": 13, "legend.frameon": False, "axes.grid": False})
+    fig, ax = plt.subplots(figsize=(7, 7))
+    for symmetry, spec in SYMMETRIES.items():
+        for backend in report["configuration"]["backends"]:
+            _, style, marker = BACKENDS[backend]
+            rows = sorted((row for row in report["rows"]
+                           if row["symmetry"] == symmetry and row["backend"] == backend),
+                          key=lambda row: row["size"])
+            x = [row["size"] for row in rows]
+            median = np.array([row["median_s"] for row in rows])
+            low = np.array([row["p16_s"] for row in rows])
+            high = np.array([row["p84_s"] for row in rows])
+            ax.errorbar(x, median, yerr=np.vstack((median-low, high-median)),
+                        color=spec["color"], linestyle=style, marker=marker,
+                        markerfacecolor="none", markersize=5, linewidth=1.8,
+                        capsize=2, elinewidth=0.8)
     ax.set_xscale("log")
     ax.set_yscale("log")
-    ax.set_xlim(MIN_PARTICLES, MAX_PARTICLES)
-    ax.set_xlabel(r"Number of particles, $N_{\mathrm{part}}$")
-    ax.set_ylabel("Potential build time [s]")
-    for i, (key, color, _, label) in enumerate(styles):
-        ax.text(0.035, 0.95 - 0.065 * i, label, transform=ax.transAxes,
-                ha="left", va="top", color=color, fontsize=11.5)
-    ax.text(0.035, 0.79,
-            "Fixed grid and $l_{\\max}=0$; expected cost $O(N)$",
-            transform=ax.transAxes, ha="left", va="top", color="0.3", fontsize=9)
-
-    profile = radial_energy_profile(rows)
-    radii = np.asarray(profile["radii_kpc"])
-    analytic_radii = np.geomspace(radii[0], PLUMMER_TRUNCATION_KPC, 512)
-    analytic_phi, _ = analytic_plummer(analytic_radii)
-    err_ax.plot(analytic_radii, analytic_phi / profile["phi_min_km2_s2"],
-                color="#238b45", linewidth=3.2, label="Analytic truncated Plummer")
-    err_ax.plot(radii, profile["native"], color="#303030", linestyle="--",
-                marker="o", markevery=6, markerfacecolor="none", markersize=5,
-                linewidth=2.2, label="Native softened")
-    err_ax.plot(radii, profile["agama"], color="#e87500", linestyle=":",
-                marker="s", markevery=8, markerfacecolor="none", markersize=5,
-                linewidth=2.2, label="Agama, unsoftened")
-    err_ax.set_xscale("log")
-    err_ax.set_xlim(radii[0], PLUMMER_TRUNCATION_KPC)
-    err_ax.set_ylim(0., 1.03)
-    err_ax.set_xlabel(r"Radius, $r$ [kpc]")
-    err_ax.set_ylabel(r"$\Phi/\Phi_{\min}$")
-    err_ax.text(0.97, 0.97,
-                r"$N=" + "{:.0e}$".format(profile["n_particles"]),
-                transform=err_ax.transAxes, fontsize=10, color="0.3",
-                va="top", ha="right")
-    err_ax.text(0.04, 0.025,
-                r"common $\Phi_{\min}=\Phi_{\rm analytic}(0)$",
-                transform=err_ax.transAxes, fontsize=9, color="0.3", va="bottom")
-    err_ax.legend(frameon=False, fontsize=10, loc="lower left",
-                  bbox_to_anchor=(0.03, 0.16))
-
+    ax.set_xlabel(r"$N$")
+    ax.set_ylabel("Construction time (s)")
+    ax.set_box_aspect(1)
+    symmetry_handles = [Line2D([], [], color=spec["color"], linewidth=2.5,
+                               label=spec["label"] + " (" + sym + ")") for sym, spec in SYMMETRIES.items()]
+    backend_handles = [Line2D([], [], color="black", linestyle=BACKENDS[key][1],
+                              marker=BACKENDS[key][2], markerfacecolor="none", label=BACKENDS[key][0])
+                       for key in report["configuration"]["backends"]]
+    symmetry_legend = ax.legend(handles=symmetry_handles, loc="upper left")
+    ax.add_artist(symmetry_legend)
+    ax.legend(handles=backend_handles, loc="lower right")
     fig.tight_layout()
-    default_path = Path(__file__).resolve().parents[1] / "images" / "potential_performance_scaling.png"
-    path = os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", str(default_path))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    return path, exponents
+    return fig
 
 
-def sample_truncated_plummer(count, rng):
-    """Draw from a Plummer sphere truncated at the fixed outer radius."""
-    scale = PLUMMER_SCALE_KPC
-    truncation = PLUMMER_TRUNCATION_KPC
-    enclosed_fraction = (truncation / np.sqrt(truncation**2 + scale**2))**3
-    q = rng.random(count) * enclosed_fraction
-    q23 = q**(2.0 / 3.0)
-    radius = scale * np.sqrt(q23 / (1.0 - q23))
-    cosine = rng.uniform(-1.0, 1.0, count)
-    azimuth = rng.uniform(0.0, 2.0 * np.pi, count)
-    sine = np.sqrt(1.0 - cosine**2)
-    return np.column_stack((radius * sine * np.cos(azimuth),
-                            radius * sine * np.sin(azimuth),
-                            radius * cosine))
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--min-particles", type=int, default=100_000)
+    parser.add_argument("--max-particles", type=int, default=10_000_000)
+    parser.add_argument("--particle-samples", type=int, default=7)
+
+    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--grid-size", type=int, default=30)
+    parser.add_argument("--support", type=float, default=0.02, help="Fixed compact-spline support h in kpc")
+    parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--native-only", action="store_true")
+    parser.add_argument("--plot-only", action="store_true", help="Read saved measurements without rerunning timings")
+    parser.add_argument("--results", type=Path, default=Path(os.environ.get("TMPDIR", Path.home() / ".hermes/cache/scratch")) / "potential_performance_results.json")
+    parser.add_argument("--figure", type=Path, default=Path(os.environ.get("POTENTIAL_PERFORMANCE_FIGURE", Path(__file__).resolve().parents[1] / "images/potential_performance_scaling.png")))
+    args = parser.parse_args(argv)
+    if args.repeats < 1 or args.grid_size < 4 or not np.isfinite(args.support) or args.support <= 0:
+        parser.error("Invalid count, grid size or support radius")
+    return args
 
 
 def main():
-    setUnits(length=1, mass=1, velocity=1)
-    rng = np.random.default_rng(2026)
-    all_positions = sample_truncated_plummer(MAX_PARTICLES, rng)
-    rmax = PLUMMER_TRUNCATION_KPC
-
-    counts = np.unique(np.rint(np.geomspace(
-        MIN_PARTICLES, MAX_PARTICLES, N_LOG_SAMPLES
-    )).astype(int))
-    rows = []
-    with tempfile.TemporaryDirectory(prefix="potential-perf-", dir=os.environ.get("TMPDIR")) as scratch:
-        for n in counts:
-            positions = np.ascontiguousarray(all_positions[:n])
-            masses = np.full(n, PLUMMER_TOTAL_MASS_MSUN / n)
-            support = SOFTENING_AT_REFERENCE_KPC * (
-                SOFTENING_REFERENCE_N / n
-            )**(1.0 / 3.0)
-            radii = np.geomspace(0.05 * PLUMMER_SCALE_KPC,
-                                 PLUMMER_TRUNCATION_KPC, ERROR_PROBE_COUNT)
-            query = np.column_stack((radii, np.zeros_like(radii), np.zeros_like(radii)))
-            truth_phi, truth_force = analytic_plummer(radii)
-            native = time_native(positions, masses, support, rmax, query)
-            agama = time_stock_agama(positions, masses, rmax, query, scratch)
-            for result in (native, agama):
-                result["potential_error"] = error_summary(result["potential_probe"], truth_phi)
-                result["force_error"] = error_summary(result["radial_force_probe"], truth_force)
-            rows.append({"n_particles": int(n),
-                         "softening_support_kpc": float(support),
-                         "native": native, "agama": agama})
-
-    figure, exponents = save_scaling_figure(rows)
-    radii = np.linalg.norm(all_positions, axis=1)
-    sorted_radii = np.sort(radii)
-    q = (sorted_radii / np.sqrt(sorted_radii**2 + PLUMMER_SCALE_KPC**2))**3
-    enclosed_fraction = (PLUMMER_TRUNCATION_KPC /
-                         np.sqrt(PLUMMER_TRUNCATION_KPC**2 + PLUMMER_SCALE_KPC**2))**3
-    empirical_cdf = np.arange(1, MAX_PARTICLES + 1) / MAX_PARTICLES
-    max_cdf_deviation = float(np.max(np.abs(q / enclosed_fraction - empirical_cdf)))
-    print(json.dumps({
-        "analytic_model": {"density": "truncated Plummer sphere",
-                   "potential_inside": "-G*M0*(1/sqrt(r^2+a^2)-a^2/(Rt^2+a^2)^(3/2)); M0=Mtotal/[Rt^3/(Rt^2+a^2)^(3/2)]",
-                   "potential_outside": "-G*Mtotal/r",
-                   "scale_radius_kpc": PLUMMER_SCALE_KPC,
-                   "truncation_radius_kpc": PLUMMER_TRUNCATION_KPC,
-                   "total_mass_msun": PLUMMER_TOTAL_MASS_MSUN,
-                   "softening_rule": "h=0.2 kpc*(1000/N)^(1/3)",
-                   "sample_size": MAX_PARTICLES,
-                   "radial_cdf_max_deviation": max_cdf_deviation,
-                   "seed": 2026},
-        "sample": {"n_source_particles": MAX_PARTICLES,
-                   "gridSizeR": GRID_SIZE_R, "rmin_kpc": RMIN_KPC,
-                   "rmax_kpc": rmax,
-                   "symmetry": "spherical", "lmax": 0,
-                   "native_kernel": "compact cubic spline, support h",
-                   "error_reference": "unsoftened analytic truncated Plummer; native errors include the deliberate softening bias",
-                   "error_probe_radii_kpc": np.geomspace(
-                       0.05 * PLUMMER_SCALE_KPC, PLUMMER_TRUNCATION_KPC,
-                       ERROR_PROBE_COUNT).tolist(),
-                   "agama_kernel": "stock unsoftened particle source",
-                   "repeats_per_N_per_backend": REPEATS,
-                   "errorbar_percentiles": [16, 84]},
-        "n_sampling": "rounded geomspace from 1e5 to 1e7; nested prefixes of one independent analytic-model realization; masses renormalized to fixed total mass at each N",
-        "asymptotic_complexity_at_fixed_grid_lmax": "O(N) for both particle-source builders",
-        "measured_loglog_slope_N_gt_1e5": exponents,
-        "figure": figure,
-        "radial_energy_profile": radial_energy_profile(rows),
-        "by_particle_count": rows,
-    }, indent=2))
+    args = parse_args()
+    report = load_build_measurements(args.results) if args.plot_only else benchmark(args)
+    figure = save_scaling_figure(report, args.figure)
+    plt.close(figure)
+    print(json.dumps({"figure": str(args.figure), "measurements": str(args.results),
+                      "timing_cases": len(report["rows"])}))
 
 
 if __name__ == "__main__":

@@ -179,6 +179,29 @@ galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_me
 visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
 ```
 
+## Energy cut: two-component skew-t fit
+
+`util.get_Ecut_skewt(energies, masses)` fits an unweighted, binned Gaussian KDE
+with **twice the Scott bandwidth** using bounded, parameter-scaled TRF least
+squares (`ftol=xtol=gtol=1e-5`, `max_nfev=600`). To avoid direct per-particle KDE
+evaluation, counts are linearly deposited on a fine grid, Gaussian-convolved
+with zero padding (no reflected particles), and interpolated onto the 20--100
+Freedman--Diaconis fitting-bin centres. The fine-grid spacing is set by a
+`1e-4` numerical interpolation tolerance relative to the Gaussian kernel peak,
+not by a desired peak count or shape. This is a controlled approximation to
+direct KDE, not exact equality. Density is normalised on the fitting grid;
+raw counts retain the Poisson residual weights. Component widths and mixture
+weight are initialised from the KDE, but no peak-shape or spline constraints
+are imposed. Existing parameter bounds are unchanged.
+
+The cut is the component-density crossing between their modes, or their mode
+midpoint if no crossing exists. Unresolvable components still use the existing
+`get_Ecut` valley fallback. An unusable sample or failed optimisation returns
+`None`; optimisation failure emits a warning rather than reporting the initial
+guess as a fit. The production pipeline retains its potential-based fallback.
+Numerical convergence does not guarantee a globally optimal or accurate
+component decomposition. Existing stored catalogues are not recomputed.
+
 ## Algorithm: Adaptive Gaussian Mixture Model (AutoGMM)
 
 The core of the package is an **adaptive** GMM: instead of assuming a fixed number of components a priori, it **discovers the kinematic structure from the data** — morphology is classified first, then residual phase-space regions that the current mixture under-represents are detected automatically and new components are added until the model fits. The component count is therefore determined by the data, not by hand.
@@ -267,13 +290,13 @@ All figures share a unified **Nature-journal style** (`NATURE_STYLE` in `visuali
 
 ## Potential Construction Benchmarks
 
-The analytic truncated-Plummer benchmarks can be reproduced with `uv run --no-sync python tests/example_potential_performance.py` and `uv run --no-sync python tests/example_potential_grid_convergence.py`. They generate the [particle-count scaling](images/potential_performance_scaling.png) and [radial-grid convergence](images/potential_grid_convergence.png) figures.
+The construction-only benchmark is reproduced with `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_performance.py`. Its [single performance figure](images/potential_performance_scaling.png) plots construction time against $N$, with both legends inside the axes. It contains no potential/force query timings. Analytic accuracy and radial-grid convergence are kept separately in `tests/example_potential_grid_convergence.py` and `tests/example_potential_analytic.py`.
 
-The left panel uses 13 logarithmic particle counts from $10^5$ to $10^7$ and nine build timings per count. Native uses $h(N)=0.2\,\mathrm{kpc}(1000/N)^{1/3}$; Agama is unsoftened. The measured finite-range log-log slopes are 0.82349 (Native) and 0.94839 (Agama), not claims about asymptotic complexity. The right panel compares the analytic truncated-Plummer potential with the two particle-built potentials as $\Phi/\Phi_{\min}$ versus radius, using the same $N=10^7$ realization and the common analytic $\Phi_{\min}=\Phi_{\rm analytic}(0)$. Native retains its intentional softening difference. Set `AGAMA_PYTHON` if Agama is installed in a separate Python environment.
+The figure covers spherical (`s`, lmax=mmax=0), axisymmetric (`a`, lmax=4, mmax=0), triaxial (`t`, lmax=mmax=4), and no symmetry (`n`, lmax=mmax=4), using the same seeded triaxial source realization. Color identifies symmetry; the two method labels are `this work` and `Agama`. Only the softened native method is timed; the native no-softening variant is excluded. Defaults are seven source counts from $10^5$ to $10^7$, `gridSizeR=30`, fixed spline support $h=0.02$ kpc, and five repetitions after one warmup. All workers run serially with one thread; timing excludes imports, I/O, warmup and object destruction. Error bars show the 16--84 percentile timing range, not field errors or confidence intervals. Agama uses its standard particle constructor; the different kernels do not imply equal physical accuracy. The square figure contains no title or setup annotations, and its xlabel is only $N$. Use `--native-only` without external Agama, and `--plot-only --results <saved-json>` to redraw cached measurements; legacy caches retain their original construction samples while query measurements are excluded. Raw samples, input digests and binary provenance are saved outside the repository by default; the performance script contains no field profiles or accuracy statistics.
 
 The grid study fixes one $N=10^6$ realization and tests `gridSizeR` = 15, 30, 60, 120, 240. Convergence is measured against the finest tested grid, not an exact continuum solution; analytic errors use method-matched targets. Between 120 and 240, the Agama radial-force change has a 95th percentile of $6.53\times10^{-3}$, so its force-error tail is not fully grid-converged.
 
-The separate [non-spherical analytic-field figure](images/potential_analytic_models.png) uses Agama's `MiyamotoNagai` and triaxial `Ferrers` analytic potential-density pairs. Reproduce it with `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py`; permanent regressions are in `tests/test_potential_analytic_models.py`. Deterministic weighted density-quadrature sources are checked at three orders, two radial grids and two harmonic orders, with an independent MN domain sweep and direct-source diagnostics. MN symmetry-plane and symmetry-axis and Ferrers x/y/z profiles share their respective analytic central normalizations; off-axis probes additionally check angular errors. The Plummer timing benchmark remains unchanged.
+The separate [non-spherical analytic-field figure](images/potential_analytic_models.png) uses Agama's `MiyamotoNagai` and triaxial `Ferrers` analytic potential-density pairs. Reproduce it with `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py`; permanent regressions are in `tests/test_potential_analytic_models.py`. Deterministic weighted density-quadrature sources are checked at three orders, two radial grids and two harmonic orders, with an independent MN domain sweep and direct-source diagnostics. MN symmetry-plane and symmetry-axis and Ferrers x/y/z profiles share their respective analytic central normalizations; off-axis probes additionally check angular errors.
 
 ## Testing
 
@@ -284,9 +307,11 @@ interpreter. Compatibility checks share exported coefficients and compare the
 unchanged off-axis evaluation domain; they do not assert identical particle
 fits or reproduce the old reference's origin/axis behavior. Native density,
 force-gradient, Cartesian Hessian and near-axis boundary tests validate those
-repaired paths independently. Historical cross-binary optimization tests need
-`MULTIPOLE_BASELINE_BINARY` pointing to the appropriate pre-change extension;
-without it they are skipped, not verified.
+repaired paths independently. The suite no longer includes one-off optimization
+comparisons against an unspecified historical binary. Current skew-t/KDE tests
+are in `tests/test_skew_t_ecut.py`; `get_Ecut` remains the unresolved-component
+fallback and is covered by `tests/example_eoemin_cut.py`. Skew-normal mixture
+tests remain relevant to the separately exported `SkewNormalMixtures` API.
 
 Additional explicitly selected algorithm examples:
 

@@ -16,11 +16,13 @@ Small helpers
     hist_bin_fd, separation_index, MAX_RADIUS
 """
 
+import warnings
+
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
-from scipy.optimize import brentq, minimize
+from scipy.optimize import brentq, least_squares
 from scipy.signal import argrelmax
-from scipy.special import gamma
+from scipy.special import gamma, ndtri
 from scipy.stats import t as student_t
 
 MAX_RADIUS = 10  # kpc, radial extent of the reference potential grid
@@ -205,7 +207,8 @@ def RefineMin(q, Vmin, D, Dmin, shrink):
 # ---------------------------------------------------------------------------
 # Energy cut: two-component skew-t estimator
 # ---------------------------------------------------------------------------
-SMOOTH_FACTOR = 2.0
+SMOOTH_FACTOR = 2.0  # Multiplier of the Gaussian KDE Scott bandwidth.
+_KDE_GRID_TOLERANCE = 1e-4  # Numerical interpolation error, not a shape threshold.
 _GAMMA_LUT = None
 
 
@@ -324,8 +327,82 @@ def _order_skew_t_params(params):
     )
 
 
+def _binned_gaussian_density(e, xc):
+    """Approximate unweighted 2*Scott KDE by linear binning and convolution.
+
+    Each particle deposits its count on its two nearest grid nodes, preserving
+    count and first moment. For a Gaussian kernel of bandwidth h, its maximum
+    absolute second derivative is K_h(0)/h**2. Linear interpolation error is
+    bounded by step**2/8 times that derivative bound. Particle binning and
+    output interpolation therefore contribute at most step**2/(4*h**2)*K_h(0)
+    before kernel truncation. This sets the fine-grid step from a numerical
+    tolerance, independently of the 20--100 bins used to fit the mixture.
+
+    Kernel tail mass is truncated at one tenth of that tolerance. Zero padding
+    (not reflection) retains the direct KDE boundary convention. The returned
+    density is not renormalised over the evaluation interval; the fitter does
+    its usual common-grid normalisation afterwards.
+    """
+    bandwidth = SMOOTH_FACTOR * e.std(ddof=1) * len(e) ** (-1.0 / 5.0)
+    if not np.isfinite(bandwidth) or bandwidth <= 0:
+        raise ValueError("Gaussian bandwidth must be finite and positive")
+    low = min(float(e.min()), float(xc.min()))
+    high = max(float(e.max()), float(xc.max()))
+    intervals = max(1, int(np.ceil(
+        (high - low) / (2.0 * bandwidth * np.sqrt(_KDE_GRID_TOLERANCE))
+    )))
+    grid = np.linspace(low, high, intervals + 1)
+    step = (high - low) / intervals
+    counts = np.zeros(intervals + 1)
+    # Process views in chunks to bound temporary memory for million-star fits.
+    chunk_size = 1 << 18
+    for start in range(0, len(e), chunk_size):
+        positions = (e[start:start + chunk_size] - low) / step
+        left = np.floor(positions).astype(np.intp)
+        np.clip(left, 0, intervals - 1, out=left)
+        fraction = positions - left
+        np.clip(fraction, 0.0, 1.0, out=fraction)
+        counts += np.bincount(left, weights=1.0 - fraction, minlength=len(grid))
+        counts += np.bincount(left + 1, weights=fraction, minlength=len(grid))
+    truncate = float(-ndtri(_KDE_GRID_TOLERANCE / 20.0))
+    density = gaussian_filter1d(
+        counts, bandwidth / step, mode="constant", cval=0.0, truncate=truncate,
+    ) / (len(e) * step)
+    return np.interp(xc, grid, density)
+
+
+def _refine_skew_t_init(init, xc, density, split, de, lower, upper):
+    """Initial widths/weight from KDE; these are guesses, not fit constraints."""
+    init = init.copy()
+    # The initial symmetric t has nu=10. Convert half-height width to its scale.
+    half_height_z = np.sqrt(10.0 * (2.0 ** (2.0 / 11.0) - 1.0))
+    for location_index, scale_index in ((1, 2), (5, 6)):
+        peak = int(np.argmin(np.abs(xc - init[location_index])))
+        level = density[peak] / 2.0
+        left = right = peak
+        while left > 0 and density[left] > level:
+            left -= 1
+        while right < len(xc) - 1 and density[right] > level:
+            right += 1
+        left_x = (float(np.interp(level, density[left:left + 2], xc[left:left + 2]))
+                  if left < peak else float(xc[peak] - de / 2.0))
+        right_x = (float(np.interp(level, density[right - 1:right + 1][::-1],
+                                   xc[right - 1:right + 1][::-1]))
+                   if right > peak else float(xc[peak] + de / 2.0))
+        init[scale_index] = max(de, (right_x - left_x) / (2.0 * half_height_z))
+    init[0] = density[xc < split].sum() / density.sum()
+    return np.clip(init, lower, upper)
+
+
 def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
     """Fit two skew-t components and return ``(params, cut, separation)``.
+
+    The unweighted density approximates a Gaussian KDE with twice the Scott
+    bandwidth by fine-grid linear binning and Gaussian convolution, evaluated
+    on 20--100 FD histogram-bin centres and normalised on that grid. Raw counts
+    provide the existing Poisson residual weights. Fit
+    with bounded, parameter-scaled TRF least squares; there are no spline or
+    peak-shape constraints.
 
     ``cut`` is the fitted component-density crossing (between the two component
     modes; the midpoint of the modes when the densities do not cross there).
@@ -337,7 +414,8 @@ def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
     ``cut`` is the ``get_Ecut`` histogram-valley estimate for the same sample.
     ``separation`` is always the fitted separation index, so callers can tell
     the two cases apart (``separation < d_min``). Returns ``(None, None, None)``
-    when the sample is too small or has no usable bin width.
+    when the sample is unusable or the optimisation fails to converge. A failed
+    optimiser is warned about and never silently replaced by its initial guess.
     """
     e = np.asarray(eb, float)
     if e.ndim != 1:
@@ -362,11 +440,11 @@ def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
     h0, edges = np.histogram(e, bins=nbins)
     de = edges[1] - edges[0]
     xc = edges[:-1] + 0.5 * de
-    sig_hat = e.std(ddof=1)
-    bandwidth_scale = min(sig_hat, iqr / 1.34)
-    h_silv = 0.9 * bandwidth_scale * len(e) ** (-1.0 / 5.0)
-    smoothing_bins = max(0.5, SMOOTH_FACTOR * h_silv / de)
-    h_sm = gaussian_filter1d(h0.astype(float), smoothing_bins)
+    try:
+        h_sm = _binned_gaussian_density(e, xc)
+    except (ValueError, np.linalg.LinAlgError) as exc:
+        warnings.warn(f"Skew-t binned KDE failed: {exc}", RuntimeWarning, stacklevel=2)
+        return None, None, None
     h_sm = h_sm / (h_sm.sum() * de)
     sig = np.sqrt(h0 + 1.0) / (h0.sum() * de)
     sig = np.clip(sig, 1e-9, None)
@@ -399,26 +477,36 @@ def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
         lower[1], upper[1] = q05, split
         lower[5], upper[5] = split, q95
 
+    if np.any(lower >= upper):
+        return None, None, None
+    init = _refine_skew_t_init(init, xc, h_sm, upper[1], de, lower, upper)
+    x_scale = np.array([1.0, init[2], init[2], 1.0, init[4],
+                        init[6], init[6], 1.0, init[8]])
+
     # Normalisation of the fit quality: one-component skew-t reference.
     med_e = float(np.median(e))
     std_e = max(de, float(e.std(ddof=1)))
     p_single = [1.0, med_e, std_e, 0.0, 0.1, med_e, std_e, 0.0, 0.1]
     chi2_0 = float(np.sum(((h_sm - _two_skew_t(xc, p_single)) / sig) ** 2))
+    chi2_0 = max(chi2_0, np.finfo(float).eps)
 
-    def objective(params):
-        chi2 = np.sum(((h_sm - _two_skew_t(xc, params)) / sig) ** 2)
-        return chi2 / chi2_0
+    def residual(params):
+        return (h_sm - _two_skew_t(xc, params)) / (sig * np.sqrt(chi2_0))
 
     try:
-        result = minimize(
-            objective, np.clip(init, lower, upper), method="Nelder-Mead",
-            bounds=list(zip(lower, upper)),
-            options={"maxiter": 600, "xatol": 1e-5, "fatol": 1e-5},
+        result = least_squares(
+            residual, init, method="trf", bounds=(lower, upper), x_scale=x_scale,
+            jac="2-point", loss="linear", max_nfev=600,
+            ftol=1e-5, xtol=1e-5, gtol=1e-5,
         )
-        params = result.x
-    except Exception:
-        params = init
-    params = _order_skew_t_params(params)
+    except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+        warnings.warn(f"Skew-t fit failed: {exc}", RuntimeWarning, stacklevel=2)
+        return None, None, None
+    if not result.success or not np.all(np.isfinite(result.x)) or not np.all(np.isfinite(result.fun)):
+        warnings.warn(f"Skew-t fit did not converge: {result.message}",
+                      RuntimeWarning, stacklevel=2)
+        return None, None, None
+    params = _order_skew_t_params(result.x)
 
     w1, m1, s1, a1, inv_nu1, m2, s2, a2, inv_nu2 = params
     nu1 = 1.0 / max(inv_nu1, 1e-6)
@@ -458,7 +546,8 @@ def get_Ecut_skewt(eb, masses=None, d_min=1.0):
     The returned value is the fitted component-density crossing, unless the two
     fitted components are unresolvable (Ashman separation index below ``d_min``),
     in which case it is the ``get_Ecut`` histogram-valley estimate. Returns
-    ``None`` only when the sample is too small/unusable for fitting.
+    ``None`` when the sample is unusable or optimisation fails to converge, so
+    the caller can apply its normal fallback. Optimisation failure emits a warning.
     """
     _, cut, _ = _fit_skew_t_with_params(eb, masses=masses, d_min=d_min)
     return cut

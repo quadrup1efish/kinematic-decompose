@@ -20,7 +20,7 @@ import numpy as np
 TEST_DIRECTORY = Path(__file__).resolve().parent
 if str(TEST_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(TEST_DIRECTORY))
-import example_potential_performance as benchmark
+import _potential_plummer_reference as benchmark
 from kinematic_decompose.potential import Potential, setUnits
 
 PARTICLE_COUNT = 1_000_000
@@ -238,7 +238,7 @@ def main():
             (right - left) * qw / 2 * q**2 * kernel_shape(q)
         ))
 
-    worker = Path(__file__).with_name("_agama_potential_performance_worker.py")
+    worker = Path(__file__).with_name("_agama_potential_grid_worker.py")
     rows = []
     with tempfile.TemporaryDirectory(
         prefix="potential-grid-convergence-", dir=os.environ.get("TMPDIR")
@@ -259,7 +259,7 @@ def main():
             del native
 
             result = subprocess.run(
-                [sys.executable, str(worker), str(input_path), "0",
+                [os.environ.get("AGAMA_PYTHON", sys.executable), str(worker), str(input_path),
                  str(benchmark.RMIN_KPC),
                  str(benchmark.PLUMMER_TRUNCATION_KPC), str(grid_size)],
                 check=True, capture_output=True, text=True,
