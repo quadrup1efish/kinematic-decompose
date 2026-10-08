@@ -198,7 +198,7 @@ bound in the full non-axisymmetric field, and circularities are not clipped.
 ## Energy cut: two-component skew-t fit
 
 `util.get_Ecut_skewt(energies, masses)` fits an unweighted, binned Gaussian KDE
-with **twice the Scott bandwidth** using bounded, parameter-scaled TRF least
+with **the standard Scott bandwidth** using bounded, parameter-scaled TRF least
 squares (`ftol=xtol=gtol=1e-5`, `max_nfev=600`). To avoid direct per-particle KDE
 evaluation, counts are linearly deposited on a fine grid, Gaussian-convolved
 with zero padding (no reflected particles), and interpolated onto the 20--100

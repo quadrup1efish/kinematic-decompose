@@ -207,7 +207,7 @@ def RefineMin(q, Vmin, D, Dmin, shrink):
 # ---------------------------------------------------------------------------
 # Energy cut: two-component skew-t estimator
 # ---------------------------------------------------------------------------
-SMOOTH_FACTOR = 2.0  # Multiplier of the Gaussian KDE Scott bandwidth.
+SMOOTH_FACTOR = 1.0  # Multiplier of the Gaussian KDE Scott bandwidth.
 _KDE_GRID_TOLERANCE = 1e-4  # Numerical interpolation error, not a shape threshold.
 _GAMMA_LUT = None
 
@@ -328,7 +328,7 @@ def _order_skew_t_params(params):
 
 
 def _binned_gaussian_density(e, xc):
-    """Approximate unweighted 2*Scott KDE by linear binning and convolution.
+    """Approximate unweighted Scott KDE by linear binning and convolution.
 
     Each particle deposits its count on its two nearest grid nodes, preserving
     count and first moment. For a Gaussian kernel of bandwidth h, its maximum
@@ -397,7 +397,7 @@ def _refine_skew_t_init(init, xc, density, split, de, lower, upper):
 def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
     """Fit two skew-t components and return ``(params, cut, separation)``.
 
-    The unweighted density approximates a Gaussian KDE with twice the Scott
+    The unweighted density approximates a Gaussian KDE with the standard Scott
     bandwidth by fine-grid linear binning and Gaussian convolution, evaluated
     on 20--100 FD histogram-bin centres and normalised on that grid. Raw counts
     provide the existing Poisson residual weights. Fit

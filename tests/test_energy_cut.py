@@ -106,7 +106,7 @@ def _two_peak_sample():
     return energies[(energies >= -1.0) & (energies <= 0.0)]
 
 
-def test_fit_uses_binned_twice_scott_kde_and_scaled_trf(monkeypatch):
+def test_fit_uses_binned_scott_kde_and_scaled_trf(monkeypatch):
     """Binned convolution keeps the KDE bandwidth and the scaled TRF contract."""
     energies = _two_peak_sample()
     original = util.least_squares
@@ -126,7 +126,8 @@ def test_fit_uses_binned_twice_scott_kde_and_scaled_trf(monkeypatch):
     assert captured['result'].success
     closure = captured['closure']
     x = closure['xc']
-    kde = gaussian_kde(energies, bw_method=lambda obj: 2.0 * obj.scotts_factor())
+    assert util.SMOOTH_FACTOR == 1.0
+    kde = gaussian_kde(energies, bw_method='scott')
     expected = kde(x)
     expected /= expected.sum() * (x[1] - x[0])
     np.testing.assert_allclose(closure['h_sm'], expected, rtol=0,
@@ -178,9 +179,9 @@ def test_unusable_samples_do_not_enter_optimizer(energies):
 ])
 def test_binned_density_matches_direct_kde_at_edges_and_in_tails(energies):
     """Do not reflect endpoint particles or discard the density outside them."""
-    h = 2.0 * energies.std(ddof=1) * len(energies) ** (-1.0 / 5.0)
+    h = energies.std(ddof=1) * len(energies) ** (-1.0 / 5.0)
     x = np.linspace(energies.min() - 6.0 * h, energies.max() + 6.0 * h, 3001)
-    expected = gaussian_kde(energies, bw_method=lambda k: 2.0 * k.scotts_factor())(x)
+    expected = gaussian_kde(energies, bw_method='scott')(x)
     density = util._binned_gaussian_density(energies, x)
     np.testing.assert_allclose(density, expected, rtol=0, atol=2e-4 * expected.max())
     assert np.all(np.isfinite(density)) and np.all(density >= 0)
