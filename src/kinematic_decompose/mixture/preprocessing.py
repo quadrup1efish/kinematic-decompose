@@ -1,5 +1,6 @@
 import numpy as np
 from copy import deepcopy
+from ._gaussian_mixture import _compute_precision_cholesky
 
 class RobustScaler():
     def __init__(self, quantile_range=[25, 75]):
@@ -35,6 +36,15 @@ class RobustScaler():
             return X * self.scale_[columns] + self.center_[columns]
     
     def inverse_transform_GMM(self, gmm):
+        """Return an independent full-covariance GMM in original coordinates.
+
+        The input model and its training statistics remain unchanged. Rebuild
+        both precision representations from the transformed covariance before
+        using the copy for inference. Copied lower bounds remain historical
+        statistics of the standardized-space fit, not original-space scores.
+        """
+        if gmm.covariance_type != "full":
+            raise ValueError("inverse_transform_GMM supports only full covariance matrices")
         transformed_gmm = deepcopy(gmm)
         n_features = gmm.means_.shape[1]
         if n_features == len(self.scale_):
@@ -50,4 +60,9 @@ class RobustScaler():
             scale_matrix = np.outer(self.scale_[:2], self.scale_[:2])
             covariances = gmm.covariances_.copy() * scale_matrix[np.newaxis, :, :]
             transformed_gmm.covariances_ = covariances
+        precisions_cholesky = _compute_precision_cholesky(
+            transformed_gmm.covariances_, transformed_gmm.covariance_type)
+        transformed_gmm._set_parameters((
+            transformed_gmm.weights_, transformed_gmm.means_,
+            transformed_gmm.covariances_, precisions_cholesky))
         return transformed_gmm

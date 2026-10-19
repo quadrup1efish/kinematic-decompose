@@ -69,27 +69,25 @@ def loadObjects(basePath, snapNum, gName, nName, fields):
     wOffset = 0
 
     for i in range(header['NumFiles']):
-        f = h5py.File(gcPath(basePath, snapNum, i), 'r')
+        with h5py.File(gcPath(basePath, snapNum, i), 'r') as f:
+            if not f['Header'].attrs['N'+nName+'_ThisFile']:
+                continue  # empty file chunk
 
-        if not f['Header'].attrs['N'+nName+'_ThisFile']:
-            continue  # empty file chunk
+            # loop over each requested field
+            for field in fields:
+                if field not in f[gName].keys():
+                    raise Exception("Group catalog does not have requested field [" + field + "]!")
 
-        # loop over each requested field
-        for field in fields:
-            if field not in f[gName].keys():
-                raise Exception("Group catalog does not have requested field [" + field + "]!")
+                # shape and type
+                shape = f[gName][field].shape
 
-            # shape and type
-            shape = f[gName][field].shape
+                # read data local to the current file
+                if len(shape) == 1:
+                    result[field][wOffset:wOffset+shape[0]] = f[gName][field][0:shape[0]]
+                else:
+                    result[field][wOffset:wOffset+shape[0], :] = f[gName][field][0:shape[0], :]
 
-            # read data local to the current file
-            if len(shape) == 1:
-                result[field][wOffset:wOffset+shape[0]] = f[gName][field][0:shape[0]]
-            else:
-                result[field][wOffset:wOffset+shape[0], :] = f[gName][field][0:shape[0], :]
-
-        wOffset += shape[0]
-        f.close()
+            wOffset += shape[0]
 
     # only a single field? then return the array instead of a single item dict
     if len(fields) == 1:

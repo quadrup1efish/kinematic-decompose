@@ -2,6 +2,8 @@
 snapshot.py: File I/O related to the snapshot files. """
 from __future__ import print_function
 
+from contextlib import ExitStack
+
 import numpy as np
 import h5py
 import six
@@ -54,7 +56,8 @@ def loadSubset(basePath, snapNum, partType, fields=None, subset=None, mdi=None, 
         fields = [fields]
 
     # load header from first chunk
-    with h5py.File(snapPath(basePath, snapNum), 'r') as f:
+    with ExitStack() as stack:
+        f = stack.enter_context(h5py.File(snapPath(basePath, snapNum), 'r'))
 
         header = dict(f['Header'].attrs.items())
         nPart = getNumPart(header)
@@ -80,7 +83,8 @@ def loadSubset(basePath, snapNum, partType, fields=None, subset=None, mdi=None, 
         # find a chunk with this particle type
         i = 1
         while gName not in f:
-            f = h5py.File(snapPath(basePath, snapNum, i), 'r')
+            f.close()
+            f = stack.enter_context(h5py.File(snapPath(basePath, snapNum, i), 'r'))
             i += 1
 
         # if fields not specified, load everything
@@ -112,40 +116,36 @@ def loadSubset(basePath, snapNum, partType, fields=None, subset=None, mdi=None, 
     origNumToRead = numToRead
 
     while numToRead:
-        f = h5py.File(snapPath(basePath, snapNum, fileNum), 'r')
+        with h5py.File(snapPath(basePath, snapNum, fileNum), 'r') as f:
+            # no particles of requested type in this file chunk?
+            if gName not in f:
+                fileNum += 1
+                fileOff  = 0
+                continue
 
-        # no particles of requested type in this file chunk?
-        if gName not in f:
-            f.close()
-            fileNum += 1
-            fileOff  = 0
-            continue
+            # set local read length for this file chunk, truncate to be within the local size
+            numTypeLocal = f['Header'].attrs['NumPart_ThisFile'][ptNum]
 
-        # set local read length for this file chunk, truncate to be within the local size
-        numTypeLocal = f['Header'].attrs['NumPart_ThisFile'][ptNum]
+            numToReadLocal = numToRead
 
-        numToReadLocal = numToRead
+            if fileOff + numToReadLocal > numTypeLocal:
+                numToReadLocal = int(numTypeLocal - fileOff)
 
-        if fileOff + numToReadLocal > numTypeLocal:
-            numToReadLocal = int(numTypeLocal - fileOff)
+            #print('['+str(fileNum).rjust(3)+'] off='+str(fileOff)+' read ['+str(numToReadLocal)+\
+            #      '] of ['+str(numTypeLocal)+'] remaining = '+str(numToRead-numToReadLocal))
 
-        #print('['+str(fileNum).rjust(3)+'] off='+str(fileOff)+' read ['+str(numToReadLocal)+\
-        #      '] of ['+str(numTypeLocal)+'] remaining = '+str(numToRead-numToReadLocal))
+            # loop over each requested field for this particle type
+            for i, field in enumerate(fields):
+                # read data local to the current file
+                if mdi is None or mdi[i] is None:
+                    result[field][wOffset:wOffset+numToReadLocal] = f[gName][field][fileOff:fileOff+numToReadLocal]
+                else:
+                    result[field][wOffset:wOffset+numToReadLocal] = f[gName][field][fileOff:fileOff+numToReadLocal, mdi[i]]
 
-        # loop over each requested field for this particle type
-        for i, field in enumerate(fields):
-            # read data local to the current file
-            if mdi is None or mdi[i] is None:
-                result[field][wOffset:wOffset+numToReadLocal] = f[gName][field][fileOff:fileOff+numToReadLocal]
-            else:
-                result[field][wOffset:wOffset+numToReadLocal] = f[gName][field][fileOff:fileOff+numToReadLocal, mdi[i]]
-
-        wOffset   += numToReadLocal
-        numToRead -= numToReadLocal
-        fileNum   += 1
-        fileOff    = 0  # start at beginning of all file chunks other than the first
-
-        f.close()
+            wOffset   += numToReadLocal
+            numToRead -= numToReadLocal
+            fileNum   += 1
+            fileOff    = 0  # start at beginning of all file chunks other than the first
 
     # verify we read the correct number
     if origNumToRead != wOffset:

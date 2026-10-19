@@ -1,6 +1,8 @@
 """Gaussian-mixture behaviour, scaling and mini-batch sample-complexity regressions."""
 from time import time
 from pathlib import Path
+import pickle
+from types import SimpleNamespace
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -10,6 +12,7 @@ import pytest
 from kinematic_decompose.mixture import GaussianMixture
 from kinematic_decompose.visualize import NATURE_STYLE
 from kinematic_decompose.mixture._base import BaseMixture
+from kinematic_decompose.mixture import preprocessing, util
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +22,86 @@ def isolated_plot_outputs(tmp_path, monkeypatch):
     (tmp_path / "image").mkdir()
     yield
     plt.close("all")
+
+
+@pytest.fixture(params=[(2, np.float64), (3, np.float64), (2, np.float32), (3, np.float32)])
+def inverse_gmm_case(request):
+    """Correlated, overlapping components with unequal feature scales."""
+    dimension, dtype = request.param
+    rng = np.random.default_rng(3861)
+    means = np.array([[-.70, .10, .30], [-.35, .70, .55]])
+    scales = np.array([.12, .32, .18])
+    correlation = np.array([[1., .5, -.2], [.5, 1., .25], [-.2, .25, 1.]])
+    covariance = correlation * np.outer(scales, scales)
+    values = np.concatenate([
+        rng.multivariate_normal(means[0], covariance, 600),
+        rng.multivariate_normal(means[1], covariance * .75, 600),
+    ])
+    scaler = preprocessing.RobustScaler().fit(values)
+    training = scaler.transform(values)[:, :dimension].astype(dtype)
+    model = GaussianMixture(n_components=2, covariance_type="full", random_state=73,
+                            n_init=1, max_iter=150, min_iter=10, tol=1e-5).fit(training)
+    assert model.converged_
+    return values, scaler, model, dtype
+
+
+@pytest.mark.parametrize("covariance_type", ["diag", "tied", "spherical"])
+def test_inverse_gmm_rejects_unsupported_covariance_layouts(covariance_type):
+    scaler = preprocessing.RobustScaler()
+    with pytest.raises(ValueError, match="only full covariance"):
+        scaler.inverse_transform_GMM(SimpleNamespace(covariance_type=covariance_type))
+
+
+def test_inverse_gmm_preserves_posteriors_and_original_model(inverse_gmm_case):
+    values, scaler, model, dtype = inverse_gmm_case
+    dimension = model.means_.shape[1]
+    original = pickle.dumps(model)
+    transformed = scaler.inverse_transform_GMM(model)
+    training = scaler.transform(values)[:, :dimension].astype(dtype)
+    raw = values[:, :dimension]
+    tolerance = 2e-5 if dtype == np.float32 else 1e-11
+    np.testing.assert_allclose(transformed.predict_proba(raw), model.predict_proba(training),
+                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_array_equal(transformed.predict(raw), model.predict(training))
+    np.testing.assert_allclose(transformed.score_samples(raw),
+                               model.score_samples(training) - np.log(scaler.scale_[:dimension]).sum(),
+                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(transformed.covariances_ @ transformed.precisions_,
+                               np.broadcast_to(np.eye(dimension), transformed.covariances_.shape),
+                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(transformed.precisions_,
+                               transformed.precisions_cholesky_ @ transformed.precisions_cholesky_.transpose(0, 2, 1),
+                               rtol=tolerance, atol=tolerance)
+    for attribute in ("weights_", "means_", "covariances_", "precisions_", "precisions_cholesky_"):
+        assert not np.shares_memory(getattr(model, attribute), getattr(transformed, attribute))
+    np.testing.assert_array_equal(transformed.weights_, model.weights_)
+    assert transformed.n_iter_ == model.n_iter_
+    assert transformed.lower_bound_ == model.lower_bound_  # Historical training statistic.
+    transformed.weights_[0] = 0.
+    transformed.means_[0, 0] += 1.
+    transformed.covariances_[0, 0, 0] += 1.
+    transformed.precisions_[0, 0, 0] += 1.
+    transformed.precisions_cholesky_[0, 0, 0] += 1.
+    assert pickle.dumps(model) == original
+
+
+@pytest.mark.parametrize("predict_method", ["hard", "soft"])
+def test_inverse_gmm_preserves_downstream_classes(inverse_gmm_case, predict_method):
+    values, scaler, model, dtype = inverse_gmm_case
+    transformed = scaler.inverse_transform_GMM(model)
+    dimension = model.means_.shape[1]
+    training = scaler.transform(values)[:, :dimension].astype(dtype)
+    _, log_resp = model._estimate_log_prob_resp(training)
+    baseline = SimpleNamespace(means_=transformed.means_,
+                               _estimate_log_prob_resp=lambda _: (None, log_resp))
+    expected = util.decompose(values, SimpleNamespace(s={}), baseline, -.5, .5,
+                              predict_method=predict_method)
+    actual = util.decompose(values, SimpleNamespace(s={}), transformed, -.5, .5,
+                            predict_method=predict_method)
+    np.testing.assert_array_equal(actual.s["label"], expected.s["label"])
+    tolerance = 2e-5 if dtype == np.float32 else 1e-11
+    np.testing.assert_allclose(actual.s["prob"], expected.s["prob"],
+                               rtol=tolerance, atol=tolerance)
 
 
 # Example gaussian mixture

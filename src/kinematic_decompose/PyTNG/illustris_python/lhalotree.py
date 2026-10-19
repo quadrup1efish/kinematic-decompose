@@ -106,61 +106,58 @@ def loadTree(basePath, snapNum, id, fields=None, onlyMPB=False):
     if isinstance(fields, six.string_types):
         fields = [fields]
 
-    fTree = h5py.File(treePath(basePath, TreeFile), 'r')
+    with h5py.File(treePath(basePath, TreeFile), 'r') as fTree:
+        # if no fields requested, return everything
+        if not fields:
+            fields = list(fTree[gName].keys())
 
-    # if no fields requested, return everything
-    if not fields:
-        fields = list(fTree[gName].keys())
+        # verify existence of requested fields
+        for field in fields:
+            if field not in fTree[gName].keys():
+                raise Exception('Error: Requested field '+field+' not in tree.')
 
-    # verify existence of requested fields
-    for field in fields:
-        if field not in fTree[gName].keys():
-            raise Exception('Error: Requested field '+field+' not in tree.')
+        # load connectivity for this entire TreeX group
+        connFields = ['FirstProgenitor', 'NextProgenitor']
+        conn = {}
 
-    # load connectivity for this entire TreeX group
-    connFields = ['FirstProgenitor', 'NextProgenitor']
-    conn = {}
+        for field in connFields:
+            conn[field] = fTree[gName][field][:]
 
-    for field in connFields:
-        conn[field] = fTree[gName][field][:]
+        # determine sub-tree size with dummy walk
+        dummy = np.zeros(conn['FirstProgenitor'].shape, dtype='int32')
+        nRows = singleNodeFlat(conn, TreeIndex, dummy, dummy, 0, onlyMPB)
 
-    # determine sub-tree size with dummy walk
-    dummy = np.zeros(conn['FirstProgenitor'].shape, dtype='int32')
-    nRows = singleNodeFlat(conn, TreeIndex, dummy, dummy, 0, onlyMPB)
+        result = {}
+        result['count'] = nRows
 
-    result = {}
-    result['count'] = nRows
+        # walk through connectivity, one data field at a time
+        for field in fields:
+            # load field for entire tree? doing so is much faster than randomly accessing the disk
+            # during walk, assuming that the sub-tree is a large fraction of the full tree, and that
+            # the sub-tree is large in the absolute sense. the decision is heuristic, and can be
+            # modified (if you have the tree on a fast SSD, could disable the full load).
+            if nRows < 1000:  # and float(nRows)/len(result['FirstProgenitor']) > 0.1
+                # do not load, walk with single disk reads
+                full_data = fTree[gName][field]
+            else:
+                # pre-load all, walk in-memory
+                full_data = fTree[gName][field][:]
 
-    # walk through connectivity, one data field at a time
-    for field in fields:
-        # load field for entire tree? doing so is much faster than randomly accessing the disk
-        # during walk, assuming that the sub-tree is a large fraction of the full tree, and that
-        # the sub-tree is large in the absolute sense. the decision is heuristic, and can be
-        # modified (if you have the tree on a fast SSD, could disable the full load).
-        if nRows < 1000:  # and float(nRows)/len(result['FirstProgenitor']) > 0.1
-            # do not load, walk with single disk reads
-            full_data = fTree[gName][field]
-        else:
-            # pre-load all, walk in-memory
-            full_data = fTree[gName][field][:]
+            # allocate the data array in the sub-tree
+            dtype = fTree[gName][field].dtype
+            shape = list(fTree[gName][field].shape)
+            shape[0] = nRows
 
-        # allocate the data array in the sub-tree
-        dtype = fTree[gName][field].dtype
-        shape = list(fTree[gName][field].shape)
-        shape[0] = nRows
+            data = np.zeros(shape, dtype=dtype)
 
-        data = np.zeros(shape, dtype=dtype)
+            # walk the tree, depth-first
+            count = singleNodeFlat(conn, TreeIndex, full_data, data, 0, onlyMPB)
 
-        # walk the tree, depth-first
-        count = singleNodeFlat(conn, TreeIndex, full_data, data, 0, onlyMPB)
+            # save field
+            result[field] = data
 
-        # save field
-        result[field] = data
+        # only a single field? then return the array instead of a single item dict
+        if len(fields) == 1:
+            return result[fields[0]]
 
-    fTree.close()
-
-    # only a single field? then return the array instead of a single item dict
-    if len(fields) == 1:
-        return result[fields[0]]
-
-    return result
+        return result
