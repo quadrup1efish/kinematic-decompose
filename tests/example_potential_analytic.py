@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Deterministic field validation against Agama MiyamotoNagai and Ferrers.
+"""Unified analytic/particle potential profiles and raw relative residuals.
 
 Run with AGAMA_PYTHON pointing to an Agama-enabled interpreter. Reference and
 project-native libraries always run in separate processes. No production changes.
 """
 import argparse
 import importlib
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -26,6 +28,82 @@ MODELS = {
     "MiyamotoNagai": dict(type="MiyamotoNagai", mass=1e10, scaleRadius=3., scaleHeight=.8),
     "Ferrers": dict(type="Ferrers", mass=1e10, scaleRadius=3., axisRatioY=.65, axisRatioZ=.35),
 }
+
+
+def profile_comparison(phi, reference, reference_minimum):
+    """Common reference normalization and raw signed relative residual (%)."""
+    phi, reference = np.asarray(phi), np.asarray(reference)
+    if (phi.shape != reference.shape or not np.isfinite(phi).all()
+            or not np.isfinite(reference).all() or np.any(reference >= 0)
+            or not np.isfinite(reference_minimum) or reference_minimum >= 0):
+        raise ValueError("Finite matched potentials and a negative reference are required")
+    return phi / reference_minimum, 100 * (phi - reference) / np.abs(reference)
+
+
+def spline_potential_kernel(distance, support):
+    """Independent cubic-spline potential kernel; support h, not epsilon."""
+    distance = np.asarray(distance, dtype=float)
+    if support <= 0 or not np.isfinite(support) or np.any(distance < 0):
+        raise ValueError("Require positive support and nonnegative distances")
+    u = distance / support
+    kernel = np.empty_like(u)
+    inner, middle = u < .5, (u >= .5) & (u < 1)
+    v = u[inner]
+    kernel[inner] = (14/5 - 16/3*v**2 + 48/5*v**4 - 32/5*v**5) / support
+    v = u[middle]
+    kernel[middle] = (16/5 - 32/3*v**2 + 16*v**3 - 48/5*v**4
+                      + 32/15*v**5 - 1/(15*v)) / support
+    kernel[u >= 1] = 1 / distance[u >= 1]
+    return kernel
+
+
+def particle_benchmark(input_path, metadata_path, grid=30, lmax=4):
+    """Rebuild all components on identical saved physical source arrays."""
+    from kinematic_decompose import potential as backend
+    backend.setUnits(length=1, mass=1, velocity=1)
+    backend.set_num_threads(1)
+    metadata = json.loads(Path(metadata_path).read_text())
+    digest = hashlib.sha256(Path(input_path).read_bytes()).hexdigest()
+    if digest != metadata["shared_input_sha256"]:
+        raise ValueError("Particle input does not match its provenance manifest")
+    support = float(metadata["softening_kernel_support_kpc"])
+    radii = np.geomspace(.01, 10., 321)
+    points = np.column_stack((np.r_[0., radii], np.zeros((len(radii) + 1, 2))))
+    reference = np.zeros(len(points))
+    profiles = {"softened": np.zeros(len(points)), "unsoftened": np.zeros(len(points))}
+    counts = {}
+    with np.load(input_path) as source:
+        for component in metadata["components"]:
+            name = component["name"]
+            positions, masses = source[name + "_positions"], source[name + "_masses"]
+            for key, array in [("positions", positions), ("masses", masses)]:
+                if hashlib.sha256(array.tobytes()).hexdigest() != component[key + "_sha256"]:
+                    raise ValueError("Component source hash mismatch: " + name)
+            counts[name] = len(masses)
+            for index, point in enumerate(points):
+                distance = np.linalg.norm(positions - point, axis=1)
+                reference[index] -= backend.G * np.dot(masses, spline_potential_kernel(distance, support))
+            for method in profiles:
+                arguments: dict = dict(type="Multipole", particles=(positions, masses),
+                                 symmetry="n", lmax=lmax, mmax=lmax, gridSizeR=grid,
+                                 rmin=component["rmin"], rmax=component["rmax"])
+                if method == "softened":
+                    arguments["softening"] = support
+                potential = backend.Potential(**arguments)
+                profiles[method] += potential.potential(points)
+                del potential
+            print("Particle component", name, "N=", len(masses), flush=True)
+    if reference[0] > reference[1:].min():
+        raise ValueError("Origin is not the reference profile minimum")
+    result = dict(radii_kpc=radii.tolist(), reference_phi=reference[1:].tolist(),
+                  reference_minimum=float(reference[0]),
+                  profiles={key: value[1:].tolist() for key, value in profiles.items()},
+                  grid=grid, lmax=lmax, mmax=lmax, symmetry="n", support_kpc=support,
+                  counts=counts, input_sha256=digest, source_metadata=metadata,
+                  input_path=str(Path(input_path).resolve()), metadata_path=str(Path(metadata_path).resolve()))
+    for values in result["profiles"].values():
+        profile_comparison(values, result["reference_phi"], result["reference_minimum"])
+    return result
 
 
 def source_nodes(model, order, domain=100.):
@@ -154,10 +232,10 @@ def benchmark(orders, scratch):
                 row["direct_axis_probes"] = dict(indices=select.tolist(),
                                                 normalized_phi=(np.asarray(direct) / phi_min).tolist())
             for name, mode, grid, lmax, softening in [
-                ("native", "native", 30, 4, 0),
-                ("agama", "agama", 30, 4, 0),
-                ("native_softened", "native", 30, 4, .02),
-                ("native_grid160", "native", 160, 4, 0),
+                ("native", "native", 30, 6, 0),
+                ("agama", "agama", 30, 6, 0),
+                ("native_softened", "native", 30, 6, .02),
+                ("native_grid160", "native", 160, 6, 0),
                 ("native_lmax12", "native", 30, 12, 0),
             ]:
                 output = scratch / "field.npz"
@@ -184,7 +262,7 @@ def benchmark(orders, scratch):
         if model == "MiyamotoNagai":
             run_worker(agama_python, "reference", source, model, order=orders[-1], domain=300.)
             output = scratch / "field.npz"
-            run_worker(sys.executable, "native", output, model, input=source, grid=30, lmax=4)
+            run_worker(sys.executable, "native", output, model, input=source, grid=30, lmax=6)
             with np.load(source) as data, np.load(output) as field:
                 domain_check = dict(domain_kpc=300., mass_msun=float(data["masses"].sum()),
                                     max_error=max_error(field["phi"], data["truth"], float(data["phi_min"])),
@@ -197,16 +275,36 @@ def benchmark(orders, scratch):
     return results
 
 
-def plot_results(results, path):
+def plot_results(results, path, particle_results=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    plt.rcParams.update({"font.family": "serif", "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
-                         "mathtext.fontset": "stix", "font.size": 12, "axes.labelsize": 16,
-                         "xtick.labelsize": 13, "ytick.labelsize": 13, "legend.fontsize": 12.5,
-                         "axes.grid": False})
+    style = {"font.family": "serif", "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+             "mathtext.fontset": "stix", "font.size": 20, "axes.labelsize": 28,
+             "xtick.labelsize": 22, "ytick.labelsize": 22, "legend.fontsize": 20,
+             "axes.grid": False, "axes.linewidth": 1.4, "legend.frameon": False,
+             "xtick.major.width": 1.4, "ytick.major.width": 1.4,
+             "xtick.major.size": 7, "ytick.major.size": 7}
+    columns = 2 if particle_results is not None else 1
+    with plt.rc_context(style):
+        fig, axes = plt.subplots(2, columns, figsize=(7 * columns, 7), squeeze=False,
+                                 gridspec_kw={"height_ratios": [4, 1], "hspace": 0},
+                                 sharex="col", sharey="row")
+        fig.subplots_adjust(left=.085 if columns == 2 else .15, right=.985,
+                            bottom=.15, top=.98, wspace=.13, hspace=0)
+        _draw_profiles(fig, axes, results, particle_results)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(path, dpi=300)
+        fig.savefig(path.with_suffix(".pdf"))
+        plt.close(fig)
+    return fig
+
+
+def _draw_profiles(fig, axes, results, particle_results):
     from matplotlib.lines import Line2D
-    fig, ax = plt.subplots(figsize=(7, 7), constrained_layout=True)
+    from matplotlib.ticker import MaxNLocator
+    ax, error_ax = axes[:, 0]
     directions = [
         ("MiyamotoNagai", ["MN: x/y", "MN: z"], ["#2166ac", "#4393c3"], ["o", "s"]),
         ("Ferrers", ["Ferrers: x", "Ferrers: y", "Ferrers: z"], ["#b2182b", "#d6604d", "#762a83"], ["^", "D", "v"]),
@@ -217,34 +315,79 @@ def plot_results(results, path):
         row = results[model]["rows"][-1]
         r = row["radii_kpc"]
         for i, (label, color, marker) in enumerate(zip(labels, colors, markers)):
-            sl = slice(i * 64, (i + 1) * 64)
-            analytic = np.array(row["analytic"])[sl]
-            softened = np.array(row["configurations"]["native_softened"]["normalized_phi"])[sl]
-            ax.plot(r, analytic, color=color, lw=2.8, label=label + ": analytic")
+            sl = slice(i * len(r), (i + 1) * len(r))
+            minimum = row["phi_min_km2_s2"]
+            reference = np.array(row["analytic"])[sl] * minimum
+            phi = np.array(row["configurations"]["native_softened"]["normalized_phi"])[sl] * minimum
+            _, residual = profile_comparison(phi, reference, minimum)
+            analytic = reference / np.min(reference)
+            softened = phi / np.min(phi)
+            ax.plot(r, analytic, color=color, lw=4, label=label + ": analytic")
             ax.plot(r, softened, color=color, ls="none", zorder=4,
-                    marker=marker, markevery=(i + 2, 7), markersize=7.2,
-                    markerfacecolor="white", markeredgewidth=1.5, label=label + ": softened")
+                    marker=marker, markevery=(i + 2, 7), markersize=10,
+                    markerfacecolor="white", markeredgewidth=2.2, label=label + ": softened")
             displayed.extend([analytic, softened])
-            direction_handles.append(Line2D([], [], color=color, lw=2.8,
-                                            marker=marker, markersize=7.2,
-                                            markerfacecolor="white", markeredgewidth=1.5, label=label))
+            error_ax.plot(r, residual, color=color, lw=3, label=label,
+                          marker=marker, markevery=(i + 2, 7), markersize=6,
+                          markerfacecolor="white", markeredgewidth=1.6)
+            direction_handles.append(Line2D([], [], color=color, lw=4,
+                                            marker=marker, markersize=10,
+                                            markerfacecolor="white", markeredgewidth=2.2, label=label))
     values = np.concatenate(displayed)
     ax.set(xscale="log", xlim=(.1, 10),
            ylim=(min(0., float(values.min()) - .04), max(1.04, float(values.max()) + .04)),
-           xlabel=r"$r\,(\mathrm{kpc})$", ylabel=r"$\Phi/\Phi_{\min}$")
-    ax.set_box_aspect(1)
-    legend = ax.legend(handles=direction_handles, loc="lower left", bbox_to_anchor=(.02, .16),
-                       frameon=False, fontsize=12.5)
+           ylabel=r"$\Phi/\Phi_{\min}$")
+    legend = ax.legend(handles=direction_handles, loc="lower left", bbox_to_anchor=(.02, .05),
+                       frameon=False)
     ax.add_artist(legend)
-    ax.legend(handles=[Line2D([], [], color="0.25", lw=2.8, label="Analytic"),
-                       Line2D([], [], color="0.25", ls="none", marker="o", markersize=7.2,
-                              markerfacecolor="white", markeredgewidth=1.5,
-                              label="Multi-particle softened")],
-              loc="upper right", frameon=False, fontsize=12.5)
-
-    fig.savefig(path, dpi=300)
-    plt.close(fig)
-    return fig
+    ax.legend(handles=[Line2D([], [], color="0.25", lw=4, label="Analytic"),
+                       Line2D([], [], color="0.25", ls="none", marker="o", markersize=10,
+                              markerfacecolor="white", markeredgewidth=2.2,
+                              label="Softened")],
+              loc="upper right", frameon=False)
+    analytic_limits = ax.get_ylim()
+    if particle_results is not None:
+        top, bottom = axes[:, 1]
+        row = particle_results
+        r, reference, minimum = row["radii_kpc"], row["reference_phi"], row["reference_minimum"]
+        reference = np.asarray(reference)
+        normalized = reference / np.min(reference)
+        top.plot(r, normalized, color="#b2182b", lw=4, label="Direct")
+        displayed = [normalized]
+        for method, color, marker, linestyle in [("softened", "#2166ac", "o", "-"),
+                                                  ("unsoftened", "#222222", "s", "--")]:
+            phi = np.asarray(row["profiles"][method])
+            _, residual = profile_comparison(phi, reference, minimum)
+            normalized = phi / np.min(phi)
+            top.plot(r, normalized, color=color, lw=4, label=method.capitalize(),
+                     ls="none" if method == "softened" else linestyle,
+                     marker=marker if method == "softened" else None,
+                     markevery=32, markersize=10, markerfacecolor="white", markeredgewidth=2.2)
+            bottom.plot(r, residual, color=color, lw=3, ls=linestyle,
+                        marker=marker, markevery=32, markersize=6, markerfacecolor="white",
+                        markeredgewidth=1.6)
+            displayed.append(normalized)
+        values = np.concatenate(displayed)
+        top.set(ylim=(min(0., float(values.min()) - .04), max(1.04, float(values.max()) + .04)),
+                ylabel="")
+        top.legend(loc="lower left")
+        # Every displayed curve uses its own sampled minimum and is <= 1.
+        limits = (min(analytic_limits[0], top.get_ylim()[0]),
+                  max(analytic_limits[1], top.get_ylim()[1]))
+        for profile_ax in axes[0]:
+            profile_ax.set_ylim(limits)
+    for column in range(axes.shape[1]):
+        top, bottom = axes[:, column]
+        top.yaxis.set_major_locator(MaxNLocator(nbins=6, prune="lower"))
+        bottom.yaxis.set_major_locator(MaxNLocator(nbins=3))
+        top.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
+        bottom.set(xscale="log", xlabel=r"$r\,(\mathrm{kpc})$", ylabel="Error [%]" if column == 0 else "")
+        if column > 0:
+            for row_ax in (top, bottom):
+                row_ax.tick_params(axis="y", which="both", left=False, labelleft=False)
+        bottom.axhline(0., color=".5", lw=1.2, zorder=0)
+        bottom.margins(y=.15)
+        top.set_xlim(.1, 10)
 
 
 def main():
@@ -259,17 +402,36 @@ def main():
     parser.add_argument("--lmax", type=int, default=4)
     parser.add_argument("--softening", type=float, default=0.)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument("--particle-input", type=Path, help="Centered physical source NPZ, outside tests")
+    parser.add_argument("--particle-metadata", type=Path, help="Matching source provenance JSON")
+    parser.add_argument("--results", type=Path, help="Persistent calculation JSON; enables cached redraw")
+    parser.add_argument("--plot-only", action="store_true")
     args = parser.parse_args()
     if args.worker == "reference":
         reference_worker(args)
     elif args.worker:
         field_worker(args)
     else:
-        with tempfile.TemporaryDirectory(prefix="analytic-field-", dir=os.environ.get("TMPDIR")) as scratch:
-            results = benchmark([12, 16] if args.smoke else [24, 36, 48], Path(scratch))
+        if args.plot_only:
+            if args.results is None:
+                parser.error("--plot-only requires --results")
+            saved = json.loads(args.results.read_text())
+        else:
+            if (args.particle_input is None) != (args.particle_metadata is None):
+                parser.error("--particle-input and --particle-metadata must be supplied together")
+            with tempfile.TemporaryDirectory(prefix="analytic-field-", dir=os.environ.get("TMPDIR")) as scratch:
+                results = benchmark([12, 16] if args.smoke else [24, 36, 48], Path(scratch))
+            particles = (particle_benchmark(args.particle_input, args.particle_metadata)
+                         if args.particle_input is not None else None)
+            saved = dict(analytic=results, particles=particles,
+                         residual="100*(Phi-Phi_ref)/abs(Phi_ref)",
+                         normalization="Upper curves use individual sampled minima; residuals use raw potentials")
+            if args.results is not None:
+                args.results.parent.mkdir(parents=True, exist_ok=True)
+                args.results.write_text(json.dumps(saved, indent=2))
         stem = "potential_analytic_models_smoke" if args.smoke else "potential_analytic_models"
         figure = ROOT / "images" / (stem + ".png")
-        plot_results(results, figure)
+        plot_results(saved["analytic"], figure, saved["particles"])
         print("Saved", figure)
 
 

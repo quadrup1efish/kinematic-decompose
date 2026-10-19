@@ -283,7 +283,11 @@ $$S = \frac{k\,d^2}{\varepsilon^2}, \qquad \varepsilon = 0.05\ \text{（TV 误�
 
 网格测试固定同一组 $N=10^6$ 粒子，扫描 `gridSizeR` = 15、30、60、120、240。收敛变化以最高测试网格为参照，并非精确连续解；误差图则使用与方法相匹配的解析目标。`gridSizeR=120` 到 240 时，Agama 径向力变化的第 95 百分位为 $6.53\times10^{-3}$，因此力误差尾部尚未完全收敛。
 
-新增独立的[非球对称解析势场验证图](images/potential_analytic_models.png)，参考 Agama 自带的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型。使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py` 复现，永久回归在 `tests/test_potential_analytic_models.py`。确定性加权密度求积分别检查三阶源点分辨率、两种径向网格和两种谐波阶数，并独立检查 MN 积分域及直接源点引力。MN 对称面/对称轴、Ferrers x/y/z 主轴分别标注，同一模型共用解析中心势归一化，另有非主轴方向误差检查。
+[统一势场验证图](images/potential_analytic_models.png)采用左右两列，每列上方是势剖面、下方是带符号相对误差。左列参考 Agama 的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型，使用 `lmax=mmax=6`；右列使用 TNG50-1 snapshot 99、subhalo 715286，保留 `lmax=mmax=4`，以同一 cubic-spline 核的直接粒子求和为参考。两列均使用 `gridSizeR=30`。上方每条曲线分别除以自身径向采样剖面的最小势值，归一化后的最大值为 1；标签为 $\Phi/\Phi_{\min}$，不显示 ref。下方误差仍由原始势值计算：$100(\Phi-\Phi_{\rm ref})/|\Phi_{\rm ref}|$，不是分别归一化后的形状差异；正值表示势较浅。上下两排分别在左右列间共享 y 轴，仅左列显示 y 标签与刻度；轴标签 28 pt、刻度 22 pt、图例 20 pt、剖面线宽 4 pt、误差线宽 3 pt。径向范围保留各自物理尺度。MN 施加轴对称、Ferrers 施加三轴对称，真实粒子对照的三个组分均不施加对称性，不能代替混合对称性生产默认的验证。未软化粒子曲线与参考的差异包含刻意的核改变；解析势对照还包含有限源积分域、谐波截断和软化效应。
+
+使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py --particle-input <centered-source.npz> --particle-metadata <manifest.json> --results <仓库外结果.json>` 重新计算合图；省略粒子参数则只生成解析模型的剖面/误差上下图。源 NPZ 保存 manifest 中各组分的物理 kpc 坐标与太阳质量权重，读取时验证输入及各组分 SHA-256。使用 `--plot-only --results <缓存.json>` 可只重绘、不重新计算。PNG 与矢量 PDF 共用同一脚本，不恢复 tests 内的 fixture，也不另建剖面绘图脚本。永久回归在 `tests/test_potential_analytic_models.py`，保留源求积阶数、径向网格、谐波阶数、MN 积分域、直接源引力及非主轴误差检查。真实粒子计算保留全部 335,520 个 DM/气体/恒星源，spline 支撑半径 $h=0.806023$ kpc，排除 BH 和外部环境；0.01--10 kpc 的 321 个采样半径上，软化势原始局部相对误差 P95 为 0.07403%、最大为 0.10807%。
+
+势场验证图的四个面板统一显示 $0.1\leq r\leq10$ kpc；真实粒子计算网格已扩展到 10 kpc，direct-spline、softened 和 unsoftened 势均在同一网格重新计算，不使用外推。
 
 ## 测试
 
