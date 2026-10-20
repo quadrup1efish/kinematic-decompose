@@ -206,7 +206,9 @@ def _krot(self):
            (self['mass'] * self['ke']).sum()
 
 def _beta(self):
-    return 1 - (self['vt']**2 + self['vphi']**2).mean() / \
+    # pynbody's vt already includes both polar and azimuthal velocities.
+    # Preserve the number-weighted raw second moments (including streaming).
+    return 1 - (self['vt']**2).mean() / \
                (2 * self['vr']**2).mean()
 
 def _tff(self):

@@ -126,6 +126,10 @@ model, galaxy, eoemin_cut, jzojc_cut = kinematic_decomposition_pipeline(
 )
 ```
 
+Potential caches are automatically stored as `{gravity_potential_path}/{run}/{snapNum:03d}/{subID}.ini`, for example `potentials/TNG50-1/099/307486.ini`. Only the cache root is supplied by the user; directories are created automatically, and no metadata sidecar is written. A matching cache is reused by default. Set `force_rebuild_potential=True` to rebuild after changing construction settings or DM mass constants; `gravity_potential_path=None` disables disk caching. Legacy flat `{subID}.ini` files are preserved but never reused or automatically migrated, because their run and snapshot cannot be verified. Exports are validated in a temporary directory on the same filesystem and atomically replace the final file only after success, preserving an existing cache on failure. This scheme isolates runs and snapshots; it does not automatically detect changes to potential settings.
+
+DM particle masses are looked up by full run name using independently checked official high-precision constants in `1e10 Msun/h` (with full Header precision retained where available). Snapshot and cutout loaders use the same table without extra snapshot-Header I/O, rounded fallbacks, or an `mDM_source` property. Unknown runs raise an error. The reported `beta` uses number-weighted raw velocity second moments, `1 - mean(vt**2)/(2*mean(vr**2))`; pynbody's `vt` already includes both tangential components.
+
 ### Step-by-step Usage
 
 See [`tests/example_kinematic_decomposition.ipynb`](tests/example_kinematic_decomposition.ipynb) for a complete walkthrough.

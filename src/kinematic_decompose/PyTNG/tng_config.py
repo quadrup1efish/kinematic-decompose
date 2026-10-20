@@ -247,32 +247,46 @@ def get_particle_field_name(field: str) -> str:
 """
 get_eps_mDM.py
 """
-def get_eps_mDM(properties) -> tuple[SimArray, SimArray]: 
+def get_eps_mDM(properties) -> tuple[SimArray, SimArray]:
+    """Return run-specific softening and fixed DM mass in 1e10 Msun/h.
+
+    DM mass is constant across snapshots of a supported run. Constants come
+    from official run metadata (about 15 significant digits), retaining extra
+    Header digits where independently verified. No runtime snapshot-file
+    lookup or mass-source bookkeeping is needed.
+    """
+    # Source: https://www.tng-project.org/data/downloads/<run>/,
+    # "dark matter particle mass [10^10 msun/h]". TNG50-1, TNG100-1 and
+    # TNG100-3 additionally preserve the full local Header.MassTable[1] value.
     MatchRun = {
-        'TNG50-1': [0.39, 3.1e5 / 1e10],
-        'TNG50-2': [0.78, 2.5e6 / 1e10],
-        'TNG50-3': [1.56, 2e7 / 1e10],
-        'TNG50-4': [3.12, 1.6e8 / 1e10],
-        'TNG100-1': [1., 5.1e6 / 1e10],
-        'TNG100-2': [2., 4e7 / 1e10],
-        'TNG100-3': [4., 3.2e8 / 1e10],
-        'TNG300-1': [2., 4e7 / 1e10],
-        'TNG300-2': [4., 3.2e8 / 1e10],
-        'TNG300-3': [8., 2.5e9 / 1e10],
-        'TNG-Cluster':[2, 6.1e7 / 1e10]
+        'TNG50-1': [0.39, 3.073677086264643e-05],
+        'TNG50-2': [0.78, 0.000245894166901171],
+        'TNG50-3': [1.56, 0.00196715333520937],
+        'TNG50-4': [3.12, 0.015737226681675],
+        'TNG100-1': [1., 0.0005055742964369746],
+        'TNG100-2': [2., 0.0040445943714958],
+        'TNG100-3': [4., 0.03235675497196638],
+        'TNG300-1': [2., 0.00398342749867548],
+        'TNG300-2': [4., 0.0318674199894039],
+        'TNG300-3': [8., 0.254939359915231],
+        'TNG-Cluster': [2., 0.00413211373831018]
     }
+
+    if properties['run'] not in MatchRun:
+        raise ValueError(f"Unsupported simulation run: {properties['run']!r}")
+    dm_mass = MatchRun[properties['run']][1]
 
     if properties['Redshift'] > 1:
         return SimArray(
             MatchRun[properties['run']][0], units.a * units.kpc / units.h
         ), SimArray(
-            MatchRun[properties['run']][1], 1e10 * units.Msol / units.h
+            dm_mass, 1e10 * units.Msol / units.h
         )
     else:
         return SimArray(
             MatchRun[properties['run']][0] / 2., units.kpc / units.h
         ), SimArray(
-            MatchRun[properties['run']][1], 1e10 * units.Msol / units.h
+            dm_mass, 1e10 * units.Msol / units.h
         )
 
 

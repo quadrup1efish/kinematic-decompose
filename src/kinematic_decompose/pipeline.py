@@ -1,4 +1,6 @@
 import pickle
+import warnings
+from tempfile import TemporaryDirectory
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -61,14 +63,31 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
                                      gravity_potential_path=None, 
                                      image_path=None, 
                                      structure_properties_output_path=None,
-                                     mixture_model_output_path=None):
+                                     mixture_model_output_path=None, *,
+                                     force_rebuild_potential=False):
+    """Decompose a galaxy, optionally caching its potential under root/run/snap/ID.ini.
+
+    Snapshot directories use three digits (e.g. 099). A None cache root disables
+    disk caching. Legacy flat caches are never reused because their run and
+    snapshot are unknown. Use force_rebuild_potential after changing construction
+    settings; this cache intentionally has no sidecar metadata or automatic
+    parameter invalidation. Completed exports replace the cache atomically.
+    """
 
     check_basepath()
     basePath = f"{BASEPATH}/{run}/output"
 
     if gravity_potential_path is not None:
-        filename = f"{gravity_potential_path}/{subID}.ini"
-        if not Path(filename).exists():
+        root = Path(gravity_potential_path)
+        filename = root / run / f"{snapNum:03d}" / f"{subID}.ini"
+        if force_rebuild_potential or not filename.exists():
+            filename.parent.mkdir(parents=True, exist_ok=True)
+            legacy = root / f"{subID}.ini"
+            if not filename.exists() and legacy.exists():
+                warnings.warn(
+                    f"Ignoring legacy potential cache {legacy}: its run and snapshot "
+                    f"are unknown. Rebuilding {filename}; the legacy file is preserved.",
+                    RuntimeWarning, stacklevel=2)
             print("create multipole potential ...")
             snapshot = Snapshot(basePath, snapNum)
             load_particle_fields = 'potential'
@@ -80,8 +99,13 @@ def kinematic_decomposition_pipeline(run, snapNum, subID,
             snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50], as_context=False)
             galaxy = snapshot.container
             pot = construct_galaxy_potential_model(galaxy)
-            pot.export(filename) 
-        pot = Potential(filename)
+            # Keep temporary files on the target filesystem for atomic replace.
+            with TemporaryDirectory(prefix=f".{subID}-", dir=filename.parent) as directory:
+                temporary = Path(directory) / filename.name
+                pot.export(str(temporary))
+                Potential(str(temporary))  # Reject incomplete/unreadable exports.
+                temporary.replace(filename)
+        pot = Potential(str(filename))
 
     snapshot = Snapshot(basePath, snapNum)
     load_particle_fields = {"star": ['Coordinates', 'Velocities', 'Masses', 'ParticleIDs', 'GFM_StellarFormationTime'],

@@ -125,6 +125,10 @@ model, galaxy, eoemin_cut, jzojc_cut = kinematic_decomposition_pipeline(
 )
 ```
 
+势缓存自动保存为 `{gravity_potential_path}/{run}/{snapNum:03d}/{subID}.ini`，例如 `potentials/TNG50-1/099/307486.ini`。用户只传缓存根目录，程序自动创建子目录，不生成元数据文件。默认复用匹配路径的缓存；修改势构造参数或 DM 质量常数后，设置 `force_rebuild_potential=True` 强制重建。`gravity_potential_path=None` 则禁用磁盘缓存。旧版平铺的 `{subID}.ini` 无法确认所属 run 和 snapshot，因此保留原文件，但不复用、不自动迁移。新文件先在同一文件系统的临时目录中导出并验证，成功后才原子替换，失败不会破坏已有缓存。这一方案隔离不同 run 和 snapshot，不自动检测势构造参数的变化。
+
+DM 单粒子质量按完整 run 名称查询独立核实的官方高精度常数，单位保持 `1e10 Msun/h`，有 Header 核验的条目保留完整精度。snapshot 和 cutout 共用同一张表，不额外读取 snapshot Header，不使用取整值后备分支，也不保存 `mDM_source`；未知 run 明确报错。输出的 `beta` 保留按粒子数加权的原始速度二阶矩口径，即 `1 - mean(vt**2)/(2*mean(vr**2))`，pynbody 的 `vt` 已包含两个切向分量。
+
 ### 分步说明
 
 详细示例见 [`tests/example_kinematic_decomposition.ipynb`](tests/example_kinematic_decomposition.ipynb)。

@@ -1,8 +1,11 @@
 """TNG cutout loading, filename helpers and periodic snapshot centering."""
 import os
 import sys
+import h5py
+import warnings
 import numpy as np
 import pynbody
+import pytest
 import matplotlib.pyplot as plt
 from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
 from kinematic_decompose.PyTNG.cutout_loader import (
@@ -10,9 +13,122 @@ from kinematic_decompose.PyTNG.cutout_loader import (
     parse_cutout_filename,
     find_cutout_file,
     list_cutout_files,
+    load_cutout,
 )
+from kinematic_decompose.PyTNG import snapshot_loader
+from kinematic_decompose.PyTNG.tng_config import get_eps_mDM
 from pynbody.array import SimArray
 from pynbody import units
+
+
+def _dm_header(redshift=0.) -> dict:
+    """Synthetic TNG metadata with a non-rounded fixed DM particle mass."""
+    return dict(SnapshotNumber=99, Time=1/(1+redshift), HubbleParam=.6774,
+                Redshift=redshift, Omega0=.3089, OmegaLambda=.6911, BoxSize=35000.,
+                NumPart_ThisFile=np.array([0, 2, 0, 0, 0, 0]),
+                MassTable=np.array([0., 3.073677086264643e-5, 0., 0., 0., 0.]))
+
+
+@pytest.mark.parametrize("redshift", [0., 2.])
+def test_snapshot_properties_use_exact_run_mass_without_snapshot_io(tmp_path, monkeypatch, redshift):
+    header = _dm_header(redshift)
+    output = tmp_path / 'TNG50-1' / 'output'
+    # Only normal group-catalog metadata is needed; no snapshot chunk is opened.
+    group_header = {k: v for k, v in header.items() if k != 'MassTable'}
+    monkeypatch.setattr(snapshot_loader.il.groupcat, 'loadHeader', lambda *args: group_header)
+    def unexpected_snapshot_access(*args):
+        raise AssertionError('DM mass lookup must not open a snapshot chunk')
+    monkeypatch.setattr(snapshot_loader.il.snapshot, 'snapPath', unexpected_snapshot_access)
+    snapshot = Snapshot(str(output), 99)
+    assert float(snapshot.properties['mDM']) == header['MassTable'][1]
+    assert 'mDM_source' not in snapshot.properties
+    assert float(snapshot.properties['mDM'].in_units('Msol', h=.6774)) == pytest.approx(
+        header['MassTable'][1] * 1e10 / .6774)
+    assert float(snapshot.properties['eps']) == pytest.approx(.39 if redshift > 1 else .195)
+
+
+def test_cutout_dm_particles_use_exact_header_mass(tmp_path):
+    header = _dm_header()
+    path = tmp_path / 'snapNum_99_subID_42_fields_Coordinates.hdf5'
+    with h5py.File(path, 'w') as handle:
+        for key, value in header.items():
+            handle.require_group('Header').attrs[key] = value
+        handle.create_group('PartType1').create_dataset('Coordinates', data=np.ones((2, 3)))
+    container, _ = load_cutout(str(path), run='TNG50-1')
+    np.testing.assert_array_equal(container.dm['mass'],
+                                  np.full(2, header['MassTable'][1], dtype=np.float32))
+    assert 'mDM_source' not in container.properties
+    container.physical_units()
+    np.testing.assert_allclose(container.dm['mass'], header['MassTable'][1] * 1e10 / .6774,
+                               rtol=2e-7)
+
+
+def test_dm_mass_run_lookup_requires_no_header_or_fallback():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        _, mass = get_eps_mDM(dict(run='TNG50-1', Redshift=0.))
+    assert float(mass) == 3.073677086264643e-5
+    assert not caught
+
+
+def test_cutout_without_mass_table_uses_same_exact_run_constant(tmp_path):
+    from kinematic_decompose.PyTNG.cutout_loader import header_to_properties
+    with h5py.File(tmp_path / 'legacy.hdf5', 'w') as handle:
+        header = handle.create_group('Header')
+        for key, value in _dm_header().items():
+            if key != 'MassTable':
+                header.attrs[key] = value
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter('always')
+            props = header_to_properties(header, 'TNG50-1', str(tmp_path))
+    assert 'mDM_source' not in props
+    assert float(props['mDM']) == 3.073677086264643e-5
+    assert not caught
+
+
+@pytest.mark.parametrize('run', ['TNG50', 'TNG50-9', 'TNG100-1-Dark'])
+def test_dm_mass_unknown_run_is_not_guessed(run):
+    with pytest.raises(ValueError, match='Unsupported simulation run'):
+        get_eps_mDM(dict(run=run, Redshift=0.))
+
+
+@pytest.mark.parametrize('redshift', [0., 2.])
+@pytest.mark.parametrize('run,mass', [
+    # Independent published values from each official downloads/<run>/ page,
+    # in 1e10 Msun/h. Metadata formatting can omit the last Header digits.
+    ('TNG50-1', 3.07367708626464e-05),
+    ('TNG50-2', 0.000245894166901171),
+    ('TNG50-3', 0.00196715333520937),
+    ('TNG50-4', 0.015737226681675),
+    ('TNG100-1', 0.000505574296436975),
+    ('TNG100-2', 0.0040445943714958),
+    ('TNG100-3', 0.0323567549719664),
+    ('TNG300-1', 0.00398342749867548),
+    ('TNG300-2', 0.0318674199894039),
+    ('TNG300-3', 0.254939359915231),
+    ('TNG-Cluster', 0.00413211373831018),
+])
+def test_all_run_masses_match_official_metadata(run, mass, redshift):
+    _, actual = get_eps_mDM(dict(run=run, Redshift=redshift))
+    np.testing.assert_allclose(float(actual), mass, rtol=1e-14, atol=0.)
+    assert actual.units == units.Unit('1e10 Msol h^-1')
+
+
+@pytest.mark.parametrize('run,mass,path', [
+    ('TNG50-1', 3.073677086264643e-5,
+     '/Users/yuwa/sims.TNG/TNG50-1/cutouts/snapNum_99_subID_715286_fields_Coordinates_Velocities_Masses.hdf5'),
+    ('TNG100-1', 0.0005055742964369746,
+     '/Users/yuwa/sims.TNG/TNG100-1/cutouts/snapNum_99_subID_472362_fields_Coordinates_Velocities_Masses.hdf5'),
+    ('TNG100-3', 0.03235675497196638,
+     '/Users/yuwa/sims.TNG/TNG100-3/output/snapdir_099/snap_099.0.hdf5'),
+])
+def test_exact_run_constants_match_independent_snapshot_headers(run, mass, path):
+    _, actual = get_eps_mDM(dict(run=run, Redshift=0.))
+    assert float(actual) == mass
+    if not os.path.isfile(path):
+        pytest.skip('Independent local TNG Header not available')
+    with h5py.File(path, 'r') as handle:
+        assert float(actual) == float(handle['Header'].attrs['MassTable'][1])
 
 
 # Example load cutout

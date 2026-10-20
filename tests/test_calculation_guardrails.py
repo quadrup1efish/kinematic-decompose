@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 from types import SimpleNamespace
 from typing import cast
+from pathlib import Path
 
 import pynbody
 from pynbody.array import SimArray
@@ -23,6 +24,23 @@ def test_circular_velocity_uses_inward_force_and_rejects_outward_force():
 
     np.testing.assert_allclose(speeds[0], np.sqrt(6.0))
     assert np.isnan(speeds[1])
+
+
+@pytest.mark.parametrize("vtheta,vphi", [(1., 5.), (1., 1.), (1., 0.)])
+def test_beta_counts_total_tangential_velocity_once(vtheta, vphi):
+    galaxy = pynbody.new(star=4)
+    galaxy.s['pos'] = SimArray(np.tile([1., 0., 0.], (4, 1)), 'kpc')
+    galaxy.s['vel'] = SimArray(np.array([
+        [1., vphi, vtheta], [-1., vphi, vtheta],
+        [1., vphi, vtheta], [-1., vphi, vtheta],
+    ]), 'km s^-1')
+    # Unequal masses must not change the established number-weighted statistic.
+    galaxy.s['mass'] = SimArray(np.array([1., 2., 4., 8.]), 'Msol')
+    np.testing.assert_allclose(galaxy.s['vt']**2,
+                               galaxy.s['vtheta']**2 + galaxy.s['vphi']**2,
+                               rtol=1e-7)
+    expected = 1 - (vtheta**2 + vphi**2) / 2
+    assert float(getattr(galaxy.s, 'beta')) == pytest.approx(expected, abs=1e-6)
 
 
 def test_pipeline_uses_potential_fallback_when_skew_t_cut_is_none(monkeypatch):
@@ -66,6 +84,94 @@ def test_pipeline_uses_potential_fallback_when_skew_t_cut_is_none(monkeypatch):
     _, _, cut, _ = pipeline.train_auto_gaussian_mixture_model(galaxy, potential)
 
     assert np.isfinite(cut)
+
+
+@pytest.fixture
+def cached_pipeline(monkeypatch):
+    """Exercise real potential serialization with lightweight snapshot I/O."""
+    builds = []
+    class SnapshotStub:
+        def __init__(self, *args):
+            self.container = SimpleNamespace(properties={'eps': .1}, s=SimpleNamespace(r50=1.))
+            self.group_catalog = {'SubhaloPos': np.zeros(3)}
+            self.properties = self.container.properties
+            self.s = self.container.s
+        def load_particle(self, **kwargs):
+            pass
+        def physical_units(self):
+            pass
+        def load_group_catalog(self, **kwargs):
+            pass
+        def GC_physical_units(self):
+            pass
+        def center(self, **kwargs):
+            pass
+        def faceon(self, **kwargs):
+            pass
+    def build(galaxy):
+        builds.append(galaxy)
+        rng = np.random.default_rng(19)
+        return Potential(particles=(rng.normal(size=(24, 3)), np.ones(24)),
+                         softening=.4, symmetry='n', lmax=4, mmax=4, gridSizeR=30)
+    monkeypatch.setattr(pipeline, 'check_basepath', lambda: None)
+    monkeypatch.setattr(pipeline, 'Snapshot', SnapshotStub)
+    monkeypatch.setattr(pipeline, 'construct_galaxy_potential_model', build)
+    monkeypatch.setattr(pipeline, 'calculate_kinematic_param', lambda galaxy, pot: galaxy)
+    monkeypatch.setattr(pipeline, 'train_auto_gaussian_mixture_model',
+                        lambda galaxy, pot: (np.zeros((1, 3)), object(), -.5, .5))
+    monkeypatch.setattr(pipeline.util, 'decompose', lambda X, galaxy, *args, **kwargs: galaxy)
+    return builds
+
+
+def test_potential_cache_separates_run_and_snapshot(tmp_path, cached_pipeline):
+    for run, snap in [('TNG50-1', 99), ('TNG50-1', 21), ('TNG100-1', 99)]:
+        pipeline.kinematic_decomposition_pipeline(run, snap, 42, gravity_potential_path=tmp_path)
+        expected = tmp_path / run / f'{snap:03d}' / '42.ini'
+        assert expected.is_file()
+        assert np.isfinite(Potential(str(expected)).potential([[1., .2, .3]])[0])
+    assert len(cached_pipeline) == 3
+    pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path)
+    assert len(cached_pipeline) == 3  # Existing exact-key cache is reused.
+    assert sorted(p.name for p in (tmp_path / 'TNG50-1' / '099').iterdir()) == ['42.ini']
+
+
+def test_potential_cache_force_rebuild_and_no_cache(tmp_path, cached_pipeline):
+    pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path)
+    pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path,
+                                              force_rebuild_potential=True)
+    assert len(cached_pipeline) == 2
+    pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42)
+    assert len(cached_pipeline) == 3
+    assert len(list(tmp_path.rglob('*.ini'))) == 1
+
+
+def test_potential_cache_does_not_reuse_or_delete_legacy_file(tmp_path, cached_pipeline):
+    legacy = tmp_path / '42.ini'
+    legacy.write_text('Unknown run and snapshot: must not be loaded')
+    with pytest.warns(RuntimeWarning, match='legacy.*cache'):
+        pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path)
+    assert len(cached_pipeline) == 1
+    assert legacy.read_text() == 'Unknown run and snapshot: must not be loaded'
+    assert (tmp_path / 'TNG50-1' / '099' / '42.ini').is_file()
+
+
+@pytest.mark.parametrize('failure_mode', ['raise', 'invalid'])
+def test_potential_cache_failed_export_preserves_previous_file(tmp_path, cached_pipeline, monkeypatch, failure_mode):
+    pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path)
+    cache = tmp_path / 'TNG50-1' / '099' / '42.ini'
+    original = cache.read_bytes()
+    def fail_export(self, filename):
+        Path(filename).write_text('incomplete')
+        if failure_mode == 'raise':
+            raise OSError('controlled export failure')
+    monkeypatch.setattr(Potential, 'export', fail_export)
+    error = OSError if failure_mode == 'raise' else RuntimeError
+    message = 'controlled export failure' if failure_mode == 'raise' else 'Multipole sections'
+    with pytest.raises(error, match=message):
+        pipeline.kinematic_decomposition_pipeline('TNG50-1', 99, 42, gravity_potential_path=tmp_path,
+                                                  force_rebuild_potential=True)
+    assert cache.read_bytes() == original
+    assert list(cache.parent.iterdir()) == [cache]
 
 
 def test_jehistogram_includes_maximum_energy_in_last_bin():
