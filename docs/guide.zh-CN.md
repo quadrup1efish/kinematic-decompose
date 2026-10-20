@@ -1,0 +1,256 @@
+# 技术指南
+
+[返回首页](../README.zh-CN.md) · [English](guide.md)
+
+### 运动学相空间
+
+分解基于恒星轨道的三个相空间维度：
+
+| 变量 | 定义 | 说明 |
+|------|------|------|
+| $e/\lvert e_{\min}\rvert$ | $E/\lvert E_{\min}\rvert$ | 轨道能量除以最小（最束缚）能量的绝对值；束缚粒子落在 $[-1, 0)$ |
+| $j_z/j_c$ | $L_z / L_c(E)$ | 圆度：角动量 $z$ 分量与同能量下圆轨道角动量之比 |
+| $j_p/j_c$ | $L_p / L_c(E)$ | 垂直方向角动量分数 |
+
+<p align="center">
+  <img src="../images/phase_space_example.png" width="600" alt="相空间分解示例"/>
+</p>
+
+### 子结构成分
+
+| 成分 | 相空间特征 |
+|------|-----------|
+| **冷盘** (Cold disk) | $j_z/j_c > 0.85$ |
+| **温盘** (Warm disk) | $j_z/j_c > 0.5$ |
+| **核球** (Bulge) | $e/\lvert e_{\min}\rvert < e_{\mathrm{cut}}$ 且 $\lvert j_z/j_c\rvert < 0.5$ |
+| **恒星晕** (Stellar halo) | $e/\lvert e_{\min}\rvert > e_{\mathrm{cut}}$ 且 $\lvert j_z/j_c\rvert < 0.5$ |
+| **反向旋转盘** (Counter-rotating disk) | $j_z/j_c < -0.5$ |
+
+其中 $e_{\mathrm{cut}}$ 根据引力势和恒星能量分布自适应确定；圆度阈值固定为 0.5。
+
+## 安装
+
+
+### 系统要求
+
+- Python ≥ 3.11
+- [Agama](https://github.com/GalacticDynamics-Oxford/Agama)（可选，仅用于差分兼容性测试）
+- [pynbody](https://pynbody.github.io/)（N-body/SPH 快照分析）
+- [IllustrisTNG](https://www.tng-project.org/) 模拟数据访问权限
+
+### 安装
+
+项目内置的 native potential backend 会自动下载并静态编译固定版本的 GSL 2.8；使用者不需要自行安装 GSL。首次构建需要 C/C++ 编译器、`make` 和网络，之后会复用本机缓存。Python 依赖由 `uv.lock` 锁定。请按 [native backend 构建说明](../src/kinematic_decompose/potential/native/README.md) 操作，再运行 `uv sync --locked`。
+
+正常安装和运行 pipeline 不需要 Agama。只有运行可选的差分兼容性测试时，才使用 `uv sync --locked --extra agama-compat` 安装该 extra。
+
+仅在 macOS 上使用 Homebrew 版 Agama 运行可选兼容性测试时，可能需要设置：
+
+```bash
+export DYLD_LIBRARY_PATH=/opt/homebrew/opt/libomp/lib
+```
+
+## 使用示例
+
+### 快速开始
+
+```python
+from kinematic_decompose.pipeline import kinematic_decomposition_pipeline
+
+model, galaxy, eoemin_cut, jzojc_cut = kinematic_decomposition_pipeline(
+    run='TNG50-1',
+    snapNum=99,
+    subID=307486,
+    gravity_potential_path='./potentials/',
+    image_path='./images/',
+    structure_properties_output_path='./properties/',
+    mixture_model_output_path='./models/',
+)
+```
+
+势缓存自动保存为 `{gravity_potential_path}/{run}/{snapNum:03d}/{subID}.ini`，例如 `potentials/TNG50-1/099/307486.ini`。用户只传缓存根目录，程序自动创建子目录，不生成元数据文件。默认复用匹配路径的缓存；修改势构造参数或 DM 质量常数后，设置 `force_rebuild_potential=True` 强制重建。`gravity_potential_path=None` 则禁用磁盘缓存。旧版平铺的 `{subID}.ini` 无法确认所属 run 和 snapshot，因此保留原文件，但不复用、不自动迁移。新文件先在同一文件系统的临时目录中导出并验证，成功后才原子替换，失败不会破坏已有缓存。这一方案隔离不同 run 和 snapshot，不自动检测势构造参数的变化。
+
+DM 单粒子质量按完整 run 名称查询独立核实的官方高精度常数，单位保持 `1e10 Msun/h`，有 Header 核验的条目保留完整精度。snapshot 和 cutout 共用同一张表，不额外读取 snapshot Header，不使用取整值后备分支，也不保存 `mDM_source`；未知 run 明确报错。输出的 `beta` 保留按粒子数加权的原始速度二阶矩口径，即 `1 - mean(vt**2)/(2*mean(vr**2))`，pynbody 的 `vt` 已包含两个切向分量。
+
+### 分步说明
+
+详细示例见 [`tests/example_kinematic_decomposition.ipynb`](../tests/example_kinematic_decomposition.ipynb)。
+
+```python
+import numpy as np
+from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
+from kinematic_decompose.gravity.kinematic_solver import (
+    construct_galaxy_potential_model, calculate_kinematic_param
+)
+from kinematic_decompose.mixture import AutoGaussianMixtureModel, preprocessing, util
+from kinematic_decompose.config import BASEPATH
+from kinematic_decompose.visualize import visualize_decomposition
+
+# 1. 从 TNG 加载星系
+snapshot = Snapshot(f"{BASEPATH}/TNG50-1/output", snapNum=99)
+snapshot.load_particle(ID=307486, load_particle_fields='default')
+snapshot.physical_units()
+snapshot.load_group_catalog(ID=307486)
+snapshot.GC_physical_units()
+snapshot.center(cen=snapshot.group_catalog['SubhaloPos'])
+snapshot.faceon(align_with='star', range=[3*snapshot.properties['eps'], 5*snapshot.s.r50])
+
+# 2. 构建引力势（项目内置的 Agama 兼容 Multipole）
+galaxy = snapshot.container
+pot = construct_galaxy_potential_model(galaxy)
+
+# 3. 计算运动学参数（φ, j_c, e/|e|_max, j_z/j_c, j_p/j_c）
+galaxy = calculate_kinematic_param(galaxy, potential=pot)
+
+# 4. 构建训练数据
+X = np.column_stack([galaxy.s['eoemin'], galaxy.s['jzojc'], galaxy.s['jpojc']])
+keep = (galaxy.s['eoemin'] < 0) & (np.abs(galaxy.s['jzojc']) < 1.5) & (galaxy.s['jpojc'] < 1.5)
+
+# 5. 确定能量截断
+sph, _ = util.JEHistogram(galaxy.s['eoemin'][keep], galaxy.s['jzojc'][keep])
+eoemin_cut = util.get_Ecut_skewt(galaxy.s['eoemin'][keep][sph], galaxy.s['mass'][keep][sph])
+
+# 6. 标准化并运行 AutoGMM
+scaler = preprocessing.RobustScaler()
+X_train = scaler.fit_transform(X[keep])
+auto_gmm = AutoGaussianMixtureModel()
+auto_gmm.fit(X_train, eoemin_cut=scaler.transform(eoemin_cut, columns=0),
+             jzojc_cut=scaler.transform(0.5, columns=1),
+             r_jzojc_cut=scaler.transform(-0.5, columns=1),
+             sample_weight=galaxy.s['mass'][keep])
+best_model = scaler.inverse_transform_GMM(auto_gmm.best_model)
+
+# 7. 进行运动学分解
+galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_method='hard')
+
+# 8. 可视化
+visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
+```
+
+## 势场对称性与圆度参考
+
+默认模型采用球对称 DM（`s`，lmax=0）、轴对称气体（`a`，lmax=4）及
+非轴对称恒星（`n`，lmax=mmax=4），各组分均使用 `gridSizeR=30`。
+`construct_galaxy_potential_model(galaxy, stellar_symmetry='a')` 可恢复旧恒星
+模型用于比较。粒子能量使用完整势；参考圆轨道使用中平面势与径向力的
+八点方位平均，先平均径向力再计算圆速度。八点消除 m=1--4 的非零
+Fourier 分量，四个主轴点则混叠 m=4。传入更高阶势时，需要在
+`calculate_kinematic_param` 中指定 `azimuth_samples > mmax`。该中平面
+参考也对应关于 z=0 镜面对称化的势。保留现有 `jc(E)` 单调包络与端点
+外推；它不是完整非轴对称势中的严格角动量上界，不裁剪圆度。
+
+
+## 算法原理：自适应高斯混合模型（AutoGMM）
+
+本包的核心是一个**自适应** GMM：不对分量数量做先验假设，而是**从数据中自动发现运动学结构**——先分类形态，再自动检测当前混合模型欠拟合的残差相空间区域并加入新分量，直到模型充分拟合。**分量数量由数据决定，而非人工指定**。
+
+`mixture/_gaussian_mixture.py` 中的自定义 `GaussianMixture` 在 scikit-learn 的基础上增加了以下功能：
+
+- **`soft_predict(X)`**：基于责任度（responsibility）的概率标签分配
+- **`sample_weight` 支持**：质量加权拟合
+- **`min_iter`**：收敛检查前的最少迭代次数保障
+- **完整精度矩阵初始化**：支持用户传入 `precisions_init`
+
+### AutoGMM 的四个拟合阶段
+
+1. **形态分类** `— _morphology_class()`：在 ($e/|e_{\min}|$, $j_z/j_c$) 上拟合 3 分量 GMM。若任一分量的 $\mu_{j_z/j_c} > \text{cut}$，则星系分类为 `'disk'`，否则为 `'spheroid'`。
+
+2. **物理初始化** `— _initialize()`：利用能量和圆度阈值将 GMM 分量映射到核球、晕、盘子群。当某个形态子群缺失时，自动退化为基于数据的统计初始化。
+
+3. **残差分量自动检测** `— _find_residual_component()`：核心创新点。
+   - 在 ($e/|e_{\min}|$, $j_z/j_c$) 上构建真实数据的 2D 直方图
+   - 从当前 GMM 计算模型预测密度
+   - 计算 $\Delta L = \text{真实}\cdot\log(\text{真实}/\text{模型}) - (\text{真实} - \text{模型})$（似然比残差）
+   - 对异常值区域做阈值分割，为每个区域估计新的高斯分量
+   - 使用类似 BIC 的增益判据选择保留哪些新分量
+
+4. **最终 EM 拟合**：以自动确定的分量数和初始化运行完整 GMM。
+
+## 依赖
+
+| 包 | 最低版本 | 用途 |
+|------|----------------|--------|
+| `agama` | 可选 `agama-compat` extra | 差分兼容性测试参考实现；运行 pipeline 不需要 |
+| `numpy` | ≥ 2.4.0 | 数值计算 |
+| `scipy` | ≥ 1.17.0 | 统计、插值、优化 |
+| `scikit-learn` | ≥ 1.8.0 | GMM 基础实现 |
+| `scikit-image` | ≥ 0.26.0 | 图像处理（label, watershed） |
+| `pynbody` | ≥ 2.4.0 | 模拟快照分析 |
+| `pandas` | ≥ 3.0.0 | 数据结构（可选，用于输出） |
+| `matplotlib` | ≥ 3.10.0 | 可视化 |
+| `pytest` | ≥ 9.0.0 | 测试 |
+
+## 可视化
+
+`visualize.py` 生成出版物质量的多面板图表：
+
+- **相空间**（顶部行）：（$j_z/j_c$, $e/|e_{\min}|$）、（$j_z/j_c$, $j_p/j_c$）、（$j_p/j_c$, $e/|e_{\min}|$）的 2D 直方图，叠加按成分配色的高斯椭圆。
+- **面密度**（中间行）：各成分的恒星面密度投影图（$\log_{10} \Sigma_*$），包含正面和侧向视图。
+- **视向速度图**（底部行）：各成分的恒星视向速度图（$v_{\text{los}} / \sqrt{v_{\text{los}}^2 + 3\sigma_{\text{los}}^2}$）。
+
+## 性能：Mini-Batch vs Full-Batch EM
+
+大样本拟合支持 mini-batch 更新；初始化、最终评分与分类仍可能随粒子数增长，不能将整条管线视为与 N 无关。批次大小使用 $S=kd^2/\varepsilon^2$ 的设置，可选对数因子；`tv_error` 是批次规模参数，不是实际 EM 拟合误差的严格保证。
+
+![Mini-batch 与 full-batch 的计时及拟合诊断](../images/scaling_performance.png)
+
+历史图中的 `BF` 实际为 $\exp(\Delta\mathrm{LB})$，其中 LB 是每样本平均对数似然诊断量；它不是通过积分模型证据得到的贝叶斯因子，接近 1 也不证明粒子分类完全一致。该图展示的是每迭代计时，不是整条管线加速比。
+
+![Batch-size 实测与参数扫描](../images/batch_size.png)
+
+测试实现与生成方法见 `tests/test_gaussian_mixture.py`；结论应限定于对应合成样本、设置和硬件。
+
+## 可视化风格
+
+所有图统一采用 **Nature 期刊风格**（`visualize.py` 中的 `NATURE_STYLE`）：衬线 Times New Roman + STIX 数学字体、克制的字号、细轴线、无网格、300 dpi 输出。面密度与视向速度图使用 O(N) 的 `searchsorted` + `bincount` 分箱（无 `lexsort` 排序），并在 PDF 输出中位图化，保持文件体积小巧。
+
+## 引力势构建基准测试
+
+纯构建性能基准使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_performance.py` 复现。[单张性能图](../images/potential_performance_scaling.png)只展示构建耗时随 $N$ 的变化，两组图例均放在坐标轴内部，不再测试势或力查询耗时。解析精度和径向网格收敛独立留在 `tests/example_potential_grid_convergence.py` 与 `tests/example_potential_analytic.py`。
+
+图中覆盖球对称（`s`，lmax=mmax=0）、轴对称（`a`，lmax=4、mmax=0）、三轴对称（`t`，lmax=mmax=4）和无对称（`n`，lmax=mmax=4），共用同一随机种子的三轴源粒子样本。颜色区分对称性，两种方法的图例仅写 `this work` 和 `Agama`。只测试带软化的本地方法，排除本地无软化版本。默认扫描 $10^5$ 至 $10^7$ 的 7 个源粒子数；固定 `gridSizeR=30`、spline 支撑半径 $h=0.02$ kpc，每组预热一次后重复 5 次。worker 串行、单线程运行；计时排除导入、I/O、预热与对象析构。误差棒仅表示耗时的 16--84 百分位范围，不表示势场误差或置信区间。Agama 使用其标准粒子构建接口，不同核的速度对照不等于物理精度相同。方图不添加标题或参数说明，横轴标签仅写 $N$。可用 `--native-only` 排除外部 Agama，或 `--plot-only --results <saved-json>` 从缓存重绘；读取旧缓存时保留原始构建计时并排除查询数据。原始耗时、输入哈希和二进制来源默认保存于仓库外；性能脚本不再包含势剖面或精度统计。
+
+网格测试固定同一组 $N=10^6$ 粒子，扫描 `gridSizeR` = 15、30、60、120、240。收敛变化以最高测试网格为参照，并非精确连续解；误差图则使用与方法相匹配的解析目标。`gridSizeR=120` 到 240 时，Agama 径向力变化的第 95 百分位为 $6.53\times10^{-3}$，因此力误差尾部尚未完全收敛。
+
+[统一势场验证图](../images/potential_analytic_models.png)采用左右两列，每列上方是势剖面、下方是带符号相对误差。左列参考 Agama 的 `MiyamotoNagai` 与三轴 `Ferrers` 解析势–密度模型，使用 `lmax=mmax=6`；右列使用 TNG50-1 snapshot 99、subhalo 715286，保留 `lmax=mmax=4`，以同一 cubic-spline 核的直接粒子求和为参考。两列均使用 `gridSizeR=30`。上方每条曲线分别除以自身径向采样剖面的最小势值，归一化后的最大值为 1；标签为 $\Phi/\Phi_{\min}$，不显示 ref。下方误差仍由原始势值计算：$100(\Phi-\Phi_{\rm ref})/|\Phi_{\rm ref}|$，不是分别归一化后的形状差异；正值表示势较浅。上下两排分别在左右列间共享 y 轴，仅左列显示 y 标签与刻度；轴标签 28 pt、刻度 22 pt、图例 20 pt、剖面线宽 4 pt、误差线宽 3 pt。径向范围保留各自物理尺度。MN 施加轴对称、Ferrers 施加三轴对称，真实粒子对照的三个组分均不施加对称性，不能代替混合对称性生产默认的验证。未软化粒子曲线与参考的差异包含刻意的核改变；解析势对照还包含有限源积分域、谐波截断和软化效应。
+
+使用 `AGAMA_PYTHON=<agama-python> uv run --no-sync python tests/example_potential_analytic.py --particle-input <centered-source.npz> --particle-metadata <manifest.json> --results <仓库外结果.json>` 重新计算合图；省略粒子参数则只生成解析模型的剖面/误差上下图。源 NPZ 保存 manifest 中各组分的物理 kpc 坐标与太阳质量权重，读取时验证输入及各组分 SHA-256。使用 `--plot-only --results <缓存.json>` 可只重绘、不重新计算。PNG 与矢量 PDF 共用同一脚本，不恢复 tests 内的 fixture，也不另建剖面绘图脚本。永久回归在 `tests/test_potential_analytic_models.py`，保留源求积阶数、径向网格、谐波阶数、MN 积分域、直接源引力及非主轴误差检查。真实粒子计算保留全部 335,520 个 DM/气体/恒星源，spline 支撑半径 $h=0.806023$ kpc，排除 BH 和外部环境；0.01--10 kpc 的 321 个采样半径上，软化势原始局部相对误差 P95 为 0.07403%、最大为 0.10807%。
+
+势场验证图的四个面板统一显示 $0.1\leq r\leq10$ kpc；真实粒子计算网格已扩展到 10 kpc，direct-spline、softened 和 unsoftened 势均在同一网格重新计算，不使用外推。
+
+## 测试
+
+使用 `python -m pytest tests -q -rs` 运行自动收集的回归测试。
+可选的进程隔离参考测试通过 `AGAMA_PYTHON`（解析模型）和
+`AGAMA_REFERENCE_PYTHON`（INI/求值兼容性）指定安装 Agama 的解释器。
+兼容性测试共享导出的系数，只比较未改变的离轴求值区域，不要求粒子拟合
+逐位相同，也不复现旧参考实现的原点/轴线行为。修复路径由本地密度、
+势梯度、Cartesian Hessian 和近轴分支边界测试独立验证。
+测试套件不再包含依赖未指定历史二进制的一次性优化对照。
+测试按主题合并；原本需要显式选择 example 文件的算法测试，现已纳入默认收集：
+
+- `tests/test_energy_cut.py` — 当前 skew-t/KDE 回归，以及 `get_Ecut` 初始化/fallback 的 21 个测试、19 个合成场景；直接运行该文件仍可绘制 TRUE（绿虚线）/ DETECTED（红实线）对照图。
+- `tests/test_gaussian_mixture.py` — GMM 行为、N 缩放基准，以及全部 18 个 mini-batch 样本复杂度与 TV 距离等价性测试。
+- `tests/test_skew_normal_mixtures.py` — 独立公开的 `SkewNormalMixtures` 接口、聚类、能量截断和性能测试。
+- `tests/test_snapshot.py` — cutout 加载、文件名工具和周期定心。cutout 集成测试依赖文件中指定的本地 TNG50-1 数据；真实星系 pipeline 另由 `tests/test_real_galaxy_smoke.py` 验证。
+- `tests/test_calculation_guardrails.py` — pipeline 防护与非轴对称势的方位平均圆轨道参考。
+- `tests/test_potential_density.py` — 密度、Poisson 一致性、软化卷积与径向多极矩。
+- `tests/test_native_numerics.py` — 内部 log-density 恢复、Cartesian 轴线 Hessian 与预计算 spline EDF。
+
+解析精度/Plummer 参考、外部 Agama 兼容性和性能绘图回归继续保留各自的测试文件。
+已删除 `tests/fixtures` 中存储的剖面及对应一次性绘图脚本；解析基准自行生成输入。
+catalog 示例与科研 notebook 保留。
+
+## 引用
+
+若本代码对您的研究有帮助，请引用相关文献：
+
+- **AutoGMM 方法**：（待发表时补充）
+- **batch_size 样本复杂度**：Ashtiani, Ben-David, Harvey, Liaw, Mehrabian & Plan 2020, [Near-optimal Sample Complexity Bounds for Robust Learning of Gaussian Mixtures via Compression Schemes](https://arxiv.org/abs/1710.05209)
+- **IllustrisTNG**：Nelson et al. 2019, [CompAC, 6, 2](https://ui.adsabs.harvard.edu/abs/2019ComAC...6....2N)
+- **Agama**：Vasiliev 2019, [MNRAS, 482, 1525](https://ui.adsabs.harvard.edu/abs/2019MNRAS.482.1525V)
+- **pynbody**：Pontzen et al. 2013, [ApJS, 239, 39](https://ui.adsabs.harvard.edu/abs/2018MNRAS.473.4025P)
+
+## 许可证
+
+包含静态链接 GSL 2.8 的可分发软件包（包括 native potential 扩展）采用 GPL-3.0-or-later。与 Agama 的处理方式一致，这不会改变 Agama 原始源码片段各自的 BSD/MIT 许可；分发时须保留随附声明。`mixture/_gaussian_mixture.py` 和 `mixture/_base.py` 中的 GMM 实现源自 scikit-learn（BSD-3-Clause），再分发时须保留各组件的许可声明。
