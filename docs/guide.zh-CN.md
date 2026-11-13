@@ -127,6 +127,52 @@ galaxy = util.decompose(X, galaxy, best_model, eoemin_cut, jzojc_cut, predict_me
 visualize_decomposition(X, best_model, galaxy, eoemin_cut, jzojc_cut, threshold_line=True)
 ```
 
+### 按空间区域加载（不依赖 halo/subhalo）
+
+`Snapshot.load_region()` 扫描完整 snapshot 的坐标，按空间位置选择粒子；不要求
+group catalog 或 offsets。初始化时指定 `header_source='snapshot'`，从快照 Header
+读取宇宙学和盒子参数。
+
+```python
+from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
+
+snapshot = Snapshot('/Users/yuwa/sims.TNG/TNG100-3/output', 99,
+                    header_source='snapshot')
+snapshot.load_region(center=[850.663, 26334.705, 18281.449],
+                     half_size=[1500, 1000, 1000])
+snapshot.physical_units()
+snapshot.center(cen=snapshot.properties['region_center'], with_velocity=False)
+```
+
+- 普通数值的 `center` 和 `half_size` 使用原生 **ckpc/h**；带单位的 `SimArray`
+  会按当前快照的 `a`、`h` 换算。`shape='box'`（默认）的 `half_size` 是半边长，
+  可为标量或三轴向量；`shape='sphere'` 时为标量半径。包含边界粒子。
+- 默认 `periodic=True`，支持跨盒边界选区。加载保留绝对坐标，中心化时才平移并 wrap。
+  `region_center` 和 `region_half_size` 会随 `physical_units()` 转换，换算后不要再把
+  原生数值中心直接传给 `center()`。
+- `load_particle_fields='default'` 沿用现有恒星、气体、DM 的字段模板；也可传
+  `{'gas': ['Coordinates', 'Velocities', 'Masses']}` 只加载气体。坐标始终加载，
+  DM 质量自动补齐；`ParticleIDs` 保留整数。BH 需在字段字典中显式加入 `bh`。
+- 若同时需要速度中心化，可向 `center()` 显式传入带单位的 `vel_cen`，或让它
+  使用中心 `cen_size` 范围内至少五颗恒星的质量加权速度。任意区域没有
+  `SubhaloVel` 后备值；仅做位置中心化时使用 `with_velocity=False`。
+- `faceon()` / `sideon()` 仍可使用，但需加载目标族的速度和质量，并按科学目标
+  选择对齐族及半径；filament 等环境区不一定有可解释的盘角动量。
+- 每次加载仍需扫描所有分片中的所选粒子族坐标；`block_size` 控制每批行数
+  （默认一百万），不是空间索引。内存随选中粒子和单批大小增长；缺失分片时报错。
+  区域没有 halo ID，也不支持 `snapshot[subID]` 的成员视图。
+
+可运行示例：[`tests/example_load_region.py`](../tests/example_load_region.py)。
+该示例默认生成 DM、gas、star 的并排面密度图：物理视场 20×20 Mpc、投影深度
+10 Mpc，沿模拟盒子 z 轴积分。渲染使用 `pynbody.plot.sph.image`，单位为
+`Msol kpc^-2`，不按 halo 成员筛选、不做盘对齐。三幅图各用独立的对数色标，
+不能将相同颜色直接解释为相同密度。计算缓存保存在 `data/`，图保存为
+`images/example_load_region_surface_density.png` / `.pdf`；重新运行默认复用投影。
+DM/gas 使用 32 邻居自适应 SPH 平滑；恒星使用一个像素的固定平滑尺度，
+避免稀疏恒星的巨大邻居核产生 Mpc 级圆斑。精确数值和读图限制分别保存在
+`images/data_truth/` 与 `images/notes/`。
+改变 `--width`、`--depth`、`--resolution` 或 `--center` 后加 `--recompute` 重算。
+
 ## 势场对称性与圆度参考
 
 默认模型采用球对称 DM（`s`，lmax=0）、轴对称气体（`a`，lmax=4）及

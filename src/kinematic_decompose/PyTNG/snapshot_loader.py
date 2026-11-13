@@ -52,6 +52,7 @@ from .tng_config import (UnitComvingLength, enforce_dtype, get_eps_mDM,
 from .cutout_loader import (find_cutout_file, header_to_properties,
                             infer_run_from_dir, load_cutout as _load_cutout,
                             parse_cutout_filename)
+from .region_loader import load_region as _load_region
 
 
 class Snapshot():
@@ -60,6 +61,12 @@ class Snapshot():
         self.snapNum  = snapNum 
         if header_source == 'output':
             self._set_snapshot_properties()
+        elif header_source == 'snapshot':
+            import h5py
+            with h5py.File(il.snapshot.snapPath(str(basePath), snapNum), 'r') as f:
+                self.properties = header_to_properties(
+                    f['Header'], infer_run_from_dir(str(basePath), basePath=str(basePath)),
+                    str(basePath), snapNum)
         elif header_source == 'cutout':
             # Properties are populated from the cutout file's own Header
             # group inside load_cutout(); no full-snapshot metadata needed.
@@ -67,7 +74,7 @@ class Snapshot():
         else:
             raise ValueError(
                 f"Unknown header_source '{header_source}': use "
-                "'output' (full snapshot) or 'cutout'."
+                "'output' (group catalog), 'snapshot' (snapshot Header), or 'cutout'."
             )
         self._original_transform = None
 
@@ -197,6 +204,34 @@ class Snapshot():
         # float32 while the pre-created 'pos' array is not.
         enforce_dtype(self.container)
         return self.container
+
+    def load_region(self, center, half_size, load_particle_fields: str | dict = 'default',
+                    shape='box', periodic=True, block_size=1_000_000):
+        """Load a spatial box or sphere, independently of halo membership.
+
+        ``center`` and ``half_size`` use native ckpc/h unless supplied as
+        unit-bearing SimArrays. For a box, half_size is a scalar or three
+        half-widths; for a sphere it is the radius. Bounds are inclusive.
+        Every snapshot file is scanned in bounded row blocks. Memory scales
+        with the selected particles plus one block, not the full snapshot.
+
+        Coordinates remain in the box frame. The returned pynbody container
+        supports physical_units(), center(), and faceon() as usual. Its
+        properties['region_center'] follows physical-unit conversion; pass
+        it explicitly to center() to use the selection center as the origin.
+        No halo IDs or catalog-based galaxy views are assigned.
+        """
+        self._set_load_particle_fields(template=load_particle_fields)
+        container = _load_region(
+            self.basePath, self.snapNum, center, half_size,
+            self.load_particle_fields, shape, periodic, block_size)
+        self.container = container
+        self.properties = container.properties
+        self.ID, self.groupType = [], []
+        self.galaxy_index, self.snap_offsets_lenType = {}, {}
+        self.group_catalog = SimDict()
+        self._original_transform = None
+        return container
 
     def load_cutout(self, ID, snapNum=None, cutout_dir=None,
                     fields: Optional[List[str]] = None,

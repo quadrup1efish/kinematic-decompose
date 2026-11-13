@@ -208,18 +208,19 @@ _PT_TO_FAMILY = {0: "gas", 1: "dm", 4: "star", 5: "bh"}
 
 
 def header_to_properties(header: h5py.Group, run: str,
-                         filedir: str) -> SimDict:
-    """Build a SimDict of simulation properties from a cutout Header group.
+                         filedir: str, snapNum: Optional[int] = None) -> SimDict:
+    """Build simulation properties from a cutout or full-snapshot Header.
 
     Mirrors ``Snapshot._set_snapshot_properties`` but reads the metadata
-    from the cutout file itself instead of ``il.groupcat.loadHeader``.
+    from the HDF5 Header instead of ``il.groupcat.loadHeader``. Supply
+    ``snapNum`` for full snapshots, whose Headers omit SnapshotNumber.
     The run name (TNG50-1, ...) must be passed explicitly because the
     cutout Header only stores the internal simulation name
     (``L35n2160TNG``), which cannot be mapped to a run key.
     """
     props = SimDict()
     props["filedir"] = filedir
-    props["Snapshot"] = int(header.attrs["SnapshotNumber"])
+    props["Snapshot"] = int(header.attrs["SnapshotNumber"] if snapNum is None else snapNum)
     props["run"] = run
     props.update({
         "a": header.attrs["Time"],

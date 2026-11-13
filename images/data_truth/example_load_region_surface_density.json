@@ -1,0 +1,56 @@
+{
+  "statistics": {
+    "dm": {
+      "count": 2215700,
+      "particle_mass_Msol": 1058353389072000.0,
+      "image_mass_Msol": 1056222502282981.6,
+      "smooth_median_kpc": 31.603107452392578,
+      "seconds": 11.363497750018723
+    },
+    "gas": {
+      "count": 2020244,
+      "particle_mass_Msol": 190134878938287.5,
+      "image_mass_Msol": 189952489122527.84,
+      "smooth_median_kpc": 47.89582061767578,
+      "seconds": 11.079634041991085
+    },
+    "star": {
+      "count": 92372,
+      "particle_mass_Msol": 6043831859506.75,
+      "image_mass_Msol": 6088381282759.031,
+      "smooth_median_kpc": 39.0625,
+      "seconds": 0.49900154198985547
+    }
+  },
+  "a": 0.9999999999999998,
+  "h": 0.6774,
+  "smooth_neighbours": 32,
+  "pynbody_version": "2.4.1",
+  "config": {
+    "basepath": "/Users/yuwa/sims.TNG/TNG100-3/output",
+    "snapshot": 99,
+    "center_ckpc_h": [
+      850.66307177,
+      26334.70465888,
+      18281.44870506
+    ],
+    "width_Mpc": 20.0,
+    "depth_Mpc": 10.0,
+    "resolution": 512,
+    "stellar_smoothing": "one_pixel"
+  },
+  "color_limits_Msol_kpc2": {
+    "dm": [
+      40136.257421875,
+      225762423.4559946
+    ],
+    "gas": [
+      7456.617763671875,
+      30140568.759999838
+    ],
+    "star": [
+      0.03742083609104156,
+      30684482.991998218
+    ]
+  }
+}
