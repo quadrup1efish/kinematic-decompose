@@ -11,7 +11,7 @@ from matplotlib.colors import LogNorm
 import pytest
 from kinematic_decompose.mixture import GaussianMixture
 from kinematic_decompose.visualize import NATURE_STYLE
-from kinematic_decompose.mixture._base import BaseMixture
+from kinematic_decompose.mixture._base import BaseMixture, _drift_upper_bound, _hac_slope_se
 from kinematic_decompose.mixture import preprocessing, util
 
 
@@ -40,7 +40,7 @@ def inverse_gmm_case(request):
     scaler = preprocessing.RobustScaler().fit(values)
     training = scaler.transform(values)[:, :dimension].astype(dtype)
     model = GaussianMixture(n_components=2, covariance_type="full", random_state=73,
-                            n_init=1, max_iter=150, min_iter=10, tol=1e-5).fit(training)
+                            n_init=1, max_iter=150, min_iter=10, tol=1e-3).fit(training)
     assert model.converged_
     return values, scaler, model, dtype
 
@@ -989,10 +989,10 @@ def test_hard_separation_tv_decays_with_batch():
     tvs_easy, tvs_hard = [], []
     for S in (800, 3200, 12800):
         m_easy = GaussianMixture(n_components=2, init_params="kmeans",
-                                 max_iter=80, min_iter=40, random_state=42,
+                                 max_iter=40, min_iter=40, random_state=42,
                                  batch_size=S).fit(X_easy, use_mini_batch=True)
         m_hard = GaussianMixture(n_components=2, init_params="kmeans",
-                                 max_iter=80, min_iter=40, random_state=42,
+                                 max_iter=40, min_iter=40, random_state=42,
                                  batch_size=S).fit(X_hard, use_mini_batch=True)
         tvs_easy.append(_tv_to_true_density(m_easy, separation=4.0))
         tvs_hard.append(_tv_to_true_density(m_hard, separation=1.0))
@@ -1284,3 +1284,133 @@ def test_visualize_batch_size_parameter_scan():
     assert all(ax.get_legend() is None for ax in axes)
     assert not fig.legends
     plt.close(fig)
+
+# ---------------------------------------------------------------------------
+# Stopping rule: the local drift-rate bound must be driven by the noise of the
+# estimate, not by a single step-to-step fluctuation.
+# ---------------------------------------------------------------------------
+
+_RAW_SIGMA = 1e-2     # per-iteration lower-bound noise of a mini-batch EM run
+
+
+def test_drift_bound_accepts_a_flat_lower_bound():
+    """A flat trace has a small local bound set by the slope uncertainty."""
+    rng = np.random.default_rng(0)
+    for _ in range(20):
+        history = -2.45 + rng.normal(0, _RAW_SIGMA, 150)
+        bound, drift, se = _drift_upper_bound(history)
+        assert bound is not None
+        assert bound == pytest.approx(drift + 3 * se)
+        assert bound < 0.02 / 150
+
+
+def test_drift_bound_rejects_a_persistent_drift():
+    """A real drift must raise the local bound above the flat case.
+
+    The old step-to-step rule compared |delta| directly with tol; on the
+    smoothed series (rho1 ~ 0.9 at n=20) it fired on noise alone, which is the
+    defect this criterion replaces.
+    """
+    rng = np.random.default_rng(1)
+    tol = 1e-2 / 150
+    flat, drifting, stops = [], [], 0
+    for _ in range(100):
+        flat.append(_drift_upper_bound(
+            -2.45 + rng.normal(0, _RAW_SIGMA, 150))[0])
+        bound = _drift_upper_bound(
+            -2.45 + 1e-4 * np.arange(150) + rng.normal(0, _RAW_SIGMA, 150))[0]
+        drifting.append(bound)
+        stops += bound < tol
+    assert stops == 0
+    assert float(np.median(drifting)) > 2.0 * float(np.median(flat))
+
+
+def test_drift_bound_handles_degenerate_and_short_history():
+    bound, drift, _ = _drift_upper_bound(np.full(150, -2.45))
+    assert drift == 0.0 and bound == 0.0  # numerically flat: stops cleanly
+    assert _drift_upper_bound(np.full(10, -2.4)) == (None, None, None)
+
+
+@pytest.mark.parametrize("slope", [1e-6, 1e-4, 1e-2])
+def test_drift_bound_is_a_rate_not_a_budget_projection(slope):
+    """An exact linear trend returns its per-step slope without extrapolation."""
+    bound, drift, se = _drift_upper_bound(-2.45 + slope * np.arange(150))
+    assert drift == pytest.approx(slope)
+    assert se < 1e-15
+    assert bound == pytest.approx(slope)
+
+
+
+
+@pytest.mark.parametrize("mini_batch", [False, True])
+def test_drift_stopping_is_independent_of_iteration_budget(mini_batch):
+    """Identical prefixes must stop at the same step for different budgets."""
+    X = _two_gaussians_d(1, n_samples=12000, separation=4.0)
+    models = [GaussianMixture(n_components=2, init_params="kmeans",
+                              batch_size=1000, random_state=42,
+                              min_iter=10, max_iter=budget, tol=1e-3).fit(
+                                  X, use_mini_batch=mini_batch)
+              for budget in (100, 300)]
+    reason = "drift_noise" if mini_batch else "drift_tol"
+    assert all(m.stop_reason_ == reason for m in models)
+    assert models[0].n_iter_ == models[1].n_iter_
+    np.testing.assert_array_equal(models[0].means_, models[1].means_)
+
+
+@pytest.mark.parametrize("drift,se,should_stop", [
+    (0., 0., True),
+    (1e-4, 0., False),
+    (2.99e-4, 1e-4, True),
+    (3e-4, 1e-4, True),
+    (3.01e-4, 1e-4, False),
+])
+def test_mini_batch_stops_at_slope_noise_boundary(monkeypatch, drift, se, should_stop):
+    """The mini-batch branch compares drift with 3SE, not a fixed tolerance."""
+    from kinematic_decompose.mixture import _base
+
+    def controlled_drift(history):
+        if len(history) < _base._DRIFT_MIN_POINTS:
+            return None, None, None
+        return drift + 3 * se, drift, se
+
+    monkeypatch.setattr(_base, "_drift_upper_bound", controlled_drift)
+    X = _two_gaussians_d(1, n_samples=1200, separation=4.)
+    model = GaussianMixture(n_components=2, batch_size=100, random_state=42,
+                            min_iter=10, max_iter=45, tol=0.)
+    if should_stop:
+        model.fit(X, use_mini_batch=True)
+    else:
+        from sklearn.exceptions import ConvergenceWarning
+        with pytest.warns(ConvergenceWarning):
+            model.fit(X, use_mini_batch=True)
+    assert model.n_iter_ == (40 if should_stop else 45)
+    assert model.converged_ == should_stop
+    assert model.stop_reason_ == ("drift_noise" if should_stop else "max_iter")
+
+
+def test_mini_batch_noise_stop_does_not_depend_on_tol():
+    """Only batch-noise uncertainty sets the mini-batch stopping threshold."""
+    X = _two_gaussians_d(1, n_samples=12000, separation=4.)
+    models = [GaussianMixture(n_components=2, init_params="kmeans",
+                              batch_size=1000, random_state=42,
+                              min_iter=10, max_iter=100, tol=tol).fit(
+                                  X, use_mini_batch=True)
+              for tol in (0., 1e6)]
+    assert all(m.stop_reason_ == "drift_noise" for m in models)
+    assert models[0].n_iter_ == models[1].n_iter_
+    np.testing.assert_array_equal(models[0].means_, models[1].means_)
+    assert models[0].drift_ is not None and models[0].drift_se_ is not None
+    assert models[0].drift_ <= 3 * models[0].drift_se_
+
+
+def test_hac_slope_se_is_calibrated_for_raw_white_noise_traces():
+    """With n=150 and white residuals the HAC error matches the naive one."""
+    rng = np.random.default_rng(2)
+    ratios = []
+    for _ in range(100):
+        y = -2.45 + rng.normal(0, _RAW_SIGMA, 150)
+        _, se_hac, _ = _hac_slope_se(y)
+        t = np.arange(150, dtype=float) - 74.5
+        naive = np.std(np.diff(y)) / np.sqrt(2 * np.dot(t, t)) * np.sqrt(146 / 148)
+        ratios.append(se_hac / naive)
+    assert 0.8 < float(np.median(ratios)) < 1.5

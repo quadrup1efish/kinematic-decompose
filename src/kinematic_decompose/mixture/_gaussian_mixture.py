@@ -583,8 +583,15 @@ class GaussianMixture(BaseMixture):
         :ref:`sphx_glr_auto_examples_mixture_plot_gmm_selection.py`.
 
     tol : float, default=1e-3
-        The convergence threshold. EM iterations will stop when the
-        lower bound average gain is below this threshold.
+        Tolerance on the local lower-bound drift rate, in nats per sample per
+        iteration, used only in the effective full-batch branch, which stops
+        when ``abs(slope) + 3 * SE < tol``. The mini-batch branch ignores ``tol``
+        and stops when ``abs(slope) <= 3 * SE``: the local trend is no longer
+        resolved above its batch-noise uncertainty. Both branches use a linear
+        trend fitted to up to 150 raw lower bounds (at least 40) and its HAC
+        standard error, after ``min_iter``. Neither local rule depends on the
+        remaining iteration budget or excludes a later improvement. If the
+        sample count is too small for mini-batching, the full-batch rule applies.
 
     reg_covar : float, default=1e-6
         Non-negative regularization added to the diagonal of covariance.
