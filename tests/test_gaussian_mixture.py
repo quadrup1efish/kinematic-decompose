@@ -1343,6 +1343,18 @@ def test_drift_bound_is_a_rate_not_a_budget_projection(slope):
 
 
 @pytest.mark.parametrize("mini_batch", [False, True])
+def test_default_min_iter_is_fifty(mini_batch):
+    """The default blocks early stopping before 50 steps in both branches."""
+    X = _two_gaussians_d(1, n_samples=12000, separation=4.)
+    model = GaussianMixture(n_components=2, batch_size=1000, random_state=42)
+    assert model.min_iter == 50
+    model.fit(X, use_mini_batch=mini_batch)
+    assert model.converged_
+    assert model.n_iter_ >= 50
+
+
+
+@pytest.mark.parametrize("mini_batch", [False, True])
 def test_drift_stopping_is_independent_of_iteration_budget(mini_batch):
     """Identical prefixes must stop at the same step for different budgets."""
     X = _two_gaussians_d(1, n_samples=12000, separation=4.0)

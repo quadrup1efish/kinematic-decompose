@@ -600,6 +600,10 @@ class GaussianMixture(BaseMixture):
     max_iter : int, default=100
         The number of EM iterations to perform.
 
+    min_iter : int, default=50
+        Minimum number of EM iterations before early stopping is allowed.
+        ``max_iter`` remains the hard iteration limit.
+
     n_init : int, default=1
         The number of initializations to perform. The best results are kept.
 
@@ -812,7 +816,7 @@ class GaussianMixture(BaseMixture):
         tol=1e-3,
         reg_covar=1e-6,
         max_iter=100,
-        min_iter=0,
+        min_iter=50,
         n_init=1,
         init_params="kmeans",
         weights_init=None,
