@@ -18,3 +18,16 @@ src/kinematic_decompose/potential/native/gsl-*.tar.gz
 # Custom folders - ignore all contents
 image/
 data/
+
+# Local analysis-only work (present in this checkout, deliberately untracked).
+# The repository ships generic functionality only -- e.g. PyTNG tracing -- not
+# project-specific data analysis. Remove an entry here once that analysis
+# becomes a reusable library feature.
+src/kinematic_decompose/cold_streams.py
+docs/cold-streams.zh-CN.md
+images/cold_streams/
+tests/example_cold_streams.py
+tests/example_cold_streams_region.py
+tests/example_central_gas_disk.py
+tests/example_stream_coplanarity.py
+tests/test_cold_streams.py
