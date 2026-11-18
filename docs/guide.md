@@ -179,7 +179,7 @@ The custom `GaussianMixture` in `mixture/_gaussian_mixture.py` extends scikit-le
 
 ### AutoGMM Fitting Stages
 
-1. **Morphology classification** — `_morphology_class()`: fits a 3-component GMM on ($e/|e_{\min}|$, $j_z/j_c$). If any component has $\mu_{j_z/j_c} > \text{cut}$, the galaxy is classified as `'disk'`; otherwise `'spheroid'`.
+1. **Morphology classification** — `_morphology_class()`: fits a 3-component GMM on ($e/|e_{\min}|$, $j_z/j_c$). If any circularity centroid exceeds the prograde cut or falls below the counter-rotating cut, the galaxy is classified as `'disk'`; otherwise `'spheroid'`. Both cuts are expressed in the same coordinates as the training data; after centering, they need not be negatives of each other.
 
 2. **Physical initialisation** — `_initialize()`: maps GMM components to bulge, halo, disk subgroups using energy and circularity cuts. Falls back to data-driven statistics when a morphological subgroup is missing.
 

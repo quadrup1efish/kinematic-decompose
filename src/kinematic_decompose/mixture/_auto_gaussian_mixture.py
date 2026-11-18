@@ -2,7 +2,7 @@ import numpy as np
 from scipy.ndimage import label, sum as ndimage_sum
 
 from .util import JEHistogram, MAX_RADIUS, hist_bin_fd
-from ._gaussian_mixture import GaussianMixture as GM
+from ._gaussian_mixture import GaussianMixture as GM, _compute_precision_cholesky
 
 REG_COVAR = 1e-6
 MIN_WEIGHT = 0.01
@@ -18,12 +18,12 @@ class AutoGaussianMixtureModel:
         self.morphology_type = morphology_type
         self.random_state = random_state
 
-    def _morphology_class(self, X, jzojc_cut):
+    def _morphology_class(self, X, jzojc_cut, r_jzojc_cut):
+        """Compare centroids with both rotation cuts in the input coordinates."""
         self.morphology_model = GM(n_components=3, n_init=1, init_params='kmeans', max_iter=100, min_iter=10, tol=1e-4, random_state=self.random_state).fit(X)
-        # disk if any component is strongly rotated in EITHER direction (cold
-        # disk has positive jz/jc, counter-rotating disk strongly negative):
-        # use the absolute value so a counter-rotating structure is not missed.
-        if np.max(np.abs(self.morphology_model.means_[:,1])) > jzojc_cut:
+        # Standardization shifts zero: the lower cut need not equal -upper.
+        circularity_means = self.morphology_model.means_[:, 1]
+        if np.any((circularity_means > jzojc_cut) | (circularity_means < r_jzojc_cut)):
             self.morphology_type='disk'
         else:
             self.morphology_type='spheroid'
@@ -32,6 +32,7 @@ class AutoGaussianMixtureModel:
     
     def _initialize(self, X, model, eoemin_cut, jzojc_cut, r_jzojc_cut,  
                     eoemin_index=0, jzojc_index=1, jpojc_index=2, disable_zero_rotation='all', scaler=None):
+        """Require MIN_POINTS assigned/candidate particles, without a weight floor."""
         if model is None and hasattr(self, 'morphology_model'):
             model = self.morphology_model
             
@@ -49,6 +50,9 @@ class AutoGaussianMixtureModel:
         bulge_labels = np.where(spheroid_cond & (eoemin_means < eoemin_cut))[0]
         
         disk_labels = np.setdiff1d(np.unique(labels), spheroid_labels)
+        # Apply the same support-count floor to inherited and new components.
+        label_counts = np.bincount(labels, minlength=len(old_weights))
+        disk_labels = disk_labels[label_counts[disk_labels] >= MIN_POINTS]
         spheroid_X = X[np.isin(labels,spheroid_labels)]
         bulge_X = spheroid_X[spheroid_X[:,eoemin_index]< eoemin_cut]
         halo_X  = spheroid_X[(spheroid_X[:,eoemin_index]>=eoemin_cut) &
@@ -74,17 +78,17 @@ class AutoGaussianMixtureModel:
             bulge_mean   = model.means_[bulge_labels][0]
             bulge_covariance = model.covariances_[bulge_labels][0]
 
-            if bulge_weight > len(bulge_X)/len(X) and len(bulge_X) >= 2:
+            if bulge_weight > len(bulge_X)/len(X) and len(bulge_X) >= MIN_POINTS:
                 bulge_weight = len(bulge_X)/len(X)
                 bulge_mean   = np.mean(bulge_X, axis=0)
                 bulge_covariance = np.cov(bulge_X, rowvar=False)
             
-            if halo_weight > len(halo_X)/len(X) and len(halo_X) >= 2:
+            if halo_weight > len(halo_X)/len(X) and len(halo_X) >= MIN_POINTS:
                 halo_weight  = len(halo_X)/len(X)
                 halo_mean    = np.mean(halo_X, axis=0)
                 halo_covariance  = np.cov(halo_X, rowvar=False)
         else:
-            if len(bulge_X) >= 2:
+            if len(bulge_X) >= MIN_POINTS:
                 bulge_weight = len(bulge_X)/len(X)
                 bulge_mean   = np.mean(bulge_X, axis=0)
                 bulge_covariance = np.cov(bulge_X, rowvar=False)
@@ -93,7 +97,7 @@ class AutoGaussianMixtureModel:
                 bulge_mean = np.zeros(X.shape[1], dtype=X.dtype)
                 bulge_covariance = np.eye(X.shape[1], dtype=X.dtype)
             
-            if len(halo_X) >= 2:
+            if len(halo_X) >= MIN_POINTS:
                 halo_weight  = len(halo_X)/len(X)
                 halo_mean    = np.mean(halo_X, axis=0)
                 halo_covariance  = np.cov(halo_X, rowvar=False)
@@ -106,17 +110,20 @@ class AutoGaussianMixtureModel:
         new_means = old_means[disk_labels].tolist()
         new_covariances = old_covariances[disk_labels].tolist()
 
-        if len(bulge_X) >= 2:
+        if len(bulge_X) >= MIN_POINTS:
             new_weights.append(bulge_weight)
             new_means.append(bulge_mean)
             new_covariances.append(bulge_covariance)
 
-        if len(halo_X) >= 2:
+        if len(halo_X) >= MIN_POINTS:
             new_weights.append(halo_weight)
             new_means.append(halo_mean)
             new_covariances.append(halo_covariance)
         
         weights_init = np.array(new_weights, dtype=X.dtype)
+        if weights_init.size == 0:
+            raise ValueError(
+                f"No initialization component has at least MIN_POINTS={MIN_POINTS} particles")
         weights_init/=weights_init.sum()
         means_init = np.array(new_means, dtype=X.dtype)
         covariances_init = np.array(new_covariances, dtype=X.dtype)
@@ -146,7 +153,11 @@ class AutoGaussianMixtureModel:
                 self.initial_model.means_[k, jzojc_index] = scaler.transform(0.0, columns=jzojc_index)
                 diag = np.diag(self.initial_model.covariances_[k]).astype(X.dtype)
                 self.initial_model.covariances_[k] = np.diag(diag)
-                self.initial_model.precisions_[k] = np.diag(1.0 / diag)
+            if np.any(halo_mask):
+                # Inference reads the Cholesky cache, not precisions_ directly.
+                self.initial_model.precisions_cholesky_[halo_mask] = _compute_precision_cholesky(
+                    self.initial_model.covariances_[halo_mask], 'full')
+                self.initial_model._set_parameters(self.initial_model._get_parameters())
         
         return self.initial_model
     
@@ -331,7 +342,8 @@ class AutoGaussianMixtureModel:
             initial_use = [0, 1]
         if use_float32 and X.dtype == np.float64:
             X = X.astype(np.float32, copy=False)
-        self.morphology_model = self._morphology_class(X=X[:,initial_use], jzojc_cut=jzojc_cut)
+        self.morphology_model = self._morphology_class(
+            X=X[:,initial_use], jzojc_cut=jzojc_cut, r_jzojc_cut=r_jzojc_cut)
         self.initial_model = self._initialize(X[:,initial_use], self.morphology_model, 
                                               eoemin_cut=eoemin_cut,
                                               jzojc_cut=jzojc_cut,

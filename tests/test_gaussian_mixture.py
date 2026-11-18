@@ -13,6 +13,9 @@ from kinematic_decompose.mixture import GaussianMixture
 from kinematic_decompose.visualize import NATURE_STYLE
 from kinematic_decompose.mixture._base import BaseMixture, _drift_upper_bound, _hac_slope_se
 from kinematic_decompose.mixture import preprocessing, util
+from kinematic_decompose.mixture._auto_gaussian_mixture import (
+    AutoGaussianMixtureModel, MIN_POINTS,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +25,160 @@ def isolated_plot_outputs(tmp_path, monkeypatch):
     (tmp_path / "image").mkdir()
     yield
     plt.close("all")
+
+
+def initialization_support_case(counts, merged_spheroid=False):
+    """Deterministic assignments isolate initialization's support-count policy."""
+    rng = np.random.default_rng(25278)
+    centers = np.array([[-.5, .9], [-.8, 0.], [-.2, 0.]])
+    groups = [rng.normal(center, [.02, .02], size=(count, 2))
+              for center, count in zip(centers, counts)]
+    values = np.concatenate(groups)
+    labels = np.repeat(np.arange(3), counts)
+    if merged_spheroid:
+        labels = np.minimum(labels, 1)
+        means = np.array([centers[0], [-.5, 0.]])
+    else:
+        means = centers.copy()
+    weights = np.bincount(labels, minlength=len(means)) / len(values)
+    model = SimpleNamespace(
+        weights_=weights,
+        means_=means,
+        covariances_=np.tile(np.eye(2) * .02, (len(means), 1, 1)),
+        soft_predict=lambda _: labels.copy(),
+    )
+    return values, model
+
+
+@pytest.mark.parametrize("merged_spheroid", [False, True])
+@pytest.mark.parametrize("component", [0, 1, 2], ids=["disk", "bulge", "halo"])
+@pytest.mark.parametrize("support", [3, MIN_POINTS - 1, MIN_POINTS, MIN_POINTS + 1])
+def test_auto_gmm_initialization_requires_minimum_support(
+        merged_spheroid, component, support):
+    counts = [3 * MIN_POINTS] * 3
+    counts[component] = support
+    values, model = initialization_support_case(counts, merged_spheroid)
+    before = pickle.dumps((model.weights_, model.means_, model.covariances_))
+    initialized = AutoGaussianMixtureModel(random_state=42)._initialize(
+        values, model, eoemin_cut=-.5, jzojc_cut=.5, r_jzojc_cut=-.5)
+    expected = 3 if support >= MIN_POINTS else 2
+    assert initialized.n_components == expected
+    assert len(initialized.weights_) == expected
+    assert np.all(initialized.weights_ > 0)
+    np.testing.assert_allclose(initialized.weights_.sum(), 1.)
+    for name in ("means_", "covariances_", "precisions_", "precisions_cholesky_"):
+        assert np.isfinite(getattr(initialized, name)).all()
+    np.testing.assert_allclose(initialized.predict_proba(values).sum(axis=1), 1.)
+    assert pickle.dumps((model.weights_, model.means_, model.covariances_)) == before
+    if support < MIN_POINTS:
+        means = initialized.means_
+        if component == 0:
+            assert not np.any(means[:, 1] > .5)
+        elif component == 1:
+            assert not np.any((np.abs(means[:, 1]) < .5) & (means[:, 0] < -.5))
+        else:
+            assert not np.any((np.abs(means[:, 1]) < .5) & (means[:, 0] > -.5))
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("correlation", [0., .75])
+def test_auto_gmm_halo_initialization_keeps_precision_caches_consistent(dtype, correlation):
+    from scipy.special import logsumexp
+    from scipy.stats import multivariate_normal
+
+    values, model = initialization_support_case([100, 100, 100])
+    covariance = np.array([[.02, correlation * np.sqrt(.02 * .03)],
+                           [correlation * np.sqrt(.02 * .03), .03]])
+    scaler = preprocessing.RobustScaler().fit(values)
+    model.means_ = scaler.transform(model.means_).astype(dtype)
+    model.covariances_ = np.tile(
+        covariance / np.outer(scaler.scale_, scaler.scale_), (3, 1, 1)).astype(dtype)
+    before = pickle.dumps((model.weights_, model.means_, model.covariances_))
+    initialized = AutoGaussianMixtureModel(random_state=42)._initialize(
+        scaler.transform(values).astype(dtype), model,
+        eoemin_cut=scaler.transform(-.5, columns=0),
+        jzojc_cut=scaler.transform(.5, columns=1),
+        r_jzojc_cut=scaler.transform(-.5, columns=1),
+        disable_zero_rotation='halo', scaler=scaler)
+
+    raw_means = scaler.inverse_transform(initialized.means_)
+    halo = (raw_means[:, 0] > -.5) & (np.abs(raw_means[:, 1]) < .5)
+    assert halo.sum() == 1
+    np.testing.assert_allclose(raw_means[halo, 1], 0., atol=1e-7)
+    np.testing.assert_array_equal(initialized.covariances_[halo, 0, 1], 0.)
+    tolerance = 2e-5 if dtype == np.float32 else 1e-11
+    identity = np.broadcast_to(np.eye(2), initialized.covariances_.shape)
+    np.testing.assert_allclose(initialized.covariances_ @ initialized.precisions_,
+                               identity, rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(
+        initialized.precisions_cholesky_ @ initialized.precisions_cholesky_.transpose(0, 2, 1),
+        initialized.precisions_, rtol=tolerance, atol=tolerance)
+
+    # An independent density implementation checks actual inference, not only attributes.
+    e, j = np.meshgrid(np.linspace(-1., .1, 31), np.linspace(-.5, 1.2, 31))
+    queries = scaler.transform(np.column_stack((e.ravel(), j.ravel()))).astype(dtype)
+    weighted_logs = np.column_stack([
+        np.log(weight) + multivariate_normal.logpdf(queries, mean=mean, cov=cov)
+        for weight, mean, cov in zip(initialized.weights_, initialized.means_,
+                                     initialized.covariances_)
+    ])
+    expected_log_density = logsumexp(weighted_logs, axis=1)
+    expected_posterior = np.exp(weighted_logs - expected_log_density[:, None])
+    np.testing.assert_allclose(initialized.score_samples(queries), expected_log_density,
+                               rtol=tolerance, atol=tolerance)
+    np.testing.assert_allclose(initialized.predict_proba(queries), expected_posterior,
+                               rtol=tolerance, atol=tolerance)
+    assert pickle.dumps((model.weights_, model.means_, model.covariances_)) == before
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("standardize", [False, True], ids=["physical", "standardized"])
+@pytest.mark.parametrize("circularities,lower_cut,expected", [
+    ([0., .3, .4], -.5, 'spheroid'),
+    ([0., -.3, -.4], -.5, 'spheroid'),
+    ([0., .3, .8], -.5, 'disk'),
+    ([0., -.3, -.8], -.5, 'disk'),
+    ([0., -.3, -.6], -.7, 'spheroid'),
+])
+def test_auto_gmm_morphology_uses_thresholds_in_training_coordinates(
+        monkeypatch, dtype, standardize, circularities, lower_cut, expected):
+    rng = np.random.default_rng(183)
+    values = np.concatenate([
+        rng.normal([energy, circularity, .2], [.015, .01, .02], (400, 3))
+        for energy, circularity in zip([-.85, -.5, -.15], circularities)
+    ])
+    scaler = preprocessing.RobustScaler().fit(values) if standardize else None
+    training = scaler.transform(values) if scaler is not None else values
+    cuts = [-.5, .5, lower_cut]
+    if scaler is not None:
+        cuts = [scaler.transform(cuts[0], columns=0),
+                scaler.transform(cuts[1], columns=1),
+                scaler.transform(cuts[2], columns=1)]
+    inspected = {}
+
+    class MorphologyInspected(Exception):
+        pass
+
+    def inspect_before_initialization(self, *args, **kwargs):
+        inspected['type'] = self.morphology_type
+        inspected['components'] = self.morphology_model.n_components
+        raise MorphologyInspected
+
+    # Exercise the public fit caller, including propagation of the lower cut.
+    monkeypatch.setattr(AutoGaussianMixtureModel, '_initialize', inspect_before_initialization)
+    with pytest.raises(MorphologyInspected):
+        AutoGaussianMixtureModel(random_state=42).fit(
+            training.astype(dtype), eoemin_cut=cuts[0], jzojc_cut=cuts[1],
+            r_jzojc_cut=cuts[2], scaler=scaler, use_float32=dtype == np.float32)
+    assert inspected['type'] == expected
+    assert inspected['components'] == (3 if expected == 'disk' else 2)
+
+
+def test_auto_gmm_initialization_reports_no_supported_components():
+    values, model = initialization_support_case([MIN_POINTS - 1] * 3)
+    with pytest.raises(ValueError, match="No initialization component.*MIN_POINTS"):
+        AutoGaussianMixtureModel(random_state=42)._initialize(
+            values, model, eoemin_cut=-.5, jzojc_cut=.5, r_jzojc_cut=-.5)
 
 
 @pytest.fixture(params=[(2, np.float64), (3, np.float64), (2, np.float32), (3, np.float32)])
