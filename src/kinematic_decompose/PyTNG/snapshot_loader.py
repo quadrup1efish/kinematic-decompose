@@ -53,6 +53,7 @@ from .cutout_loader import (find_cutout_file, header_to_properties,
                             infer_run_from_dir, load_cutout as _load_cutout,
                             parse_cutout_filename)
 from .region_loader import load_region as _load_region
+from .region_io import save_region as _save_region, read_region as _read_region
 
 
 class Snapshot():
@@ -206,7 +207,7 @@ class Snapshot():
         return self.container
 
     def load_region(self, center, half_size, load_particle_fields: str | dict = 'default',
-                    shape='box', periodic=True, block_size=1_000_000):
+                    shape='box', periodic=True, block_size=1_000_000, progress=None):
         """Load a spatial box or sphere, independently of halo membership.
 
         ``center`` and ``half_size`` use native ckpc/h unless supplied as
@@ -224,7 +225,7 @@ class Snapshot():
         self._set_load_particle_fields(template=load_particle_fields)
         container = _load_region(
             self.basePath, self.snapNum, center, half_size,
-            self.load_particle_fields, shape, periodic, block_size)
+            self.load_particle_fields, shape, periodic, block_size, progress)
         self.container = container
         self.properties = container.properties
         self.ID, self.groupType = [], []
@@ -232,6 +233,29 @@ class Snapshot():
         self.group_catalog = SimDict()
         self._original_transform = None
         return container
+
+    def save_region(self, filename, catalog=None):
+        """Write a self-contained region HDF5 before centering/rotation.
+
+        Existing files (including unfinished .part files) are never overwritten.
+        """
+        return _save_region(self.container, filename, catalog=catalog)
+
+    @classmethod
+    def from_region(cls, filename):
+        """Read a region HDF5 without a local full snapshot or catalogue."""
+        container = _read_region(filename)
+        snapshot = cls(str(filename), int(container.properties['Snapshot']),
+                       header_source='cutout')
+        snapshot.basePath = container.properties['filedir']
+        snapshot.container = container
+        snapshot.properties = container.properties
+        snapshot.ID, snapshot.groupType = [], []
+        snapshot.galaxy_index, snapshot.snap_offsets_lenType = {}, {}
+        snapshot.partTypes = list(container._region_fields)
+        snapshot.load_particle_fields = container._region_fields
+        snapshot.region_catalog = container._region_catalog
+        return snapshot
 
     def load_cutout(self, ID, snapNum=None, cutout_dir=None,
                     fields: Optional[List[str]] = None,

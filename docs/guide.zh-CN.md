@@ -173,6 +173,78 @@ DM/gas 使用 32 邻居自适应 SPH 平滑；恒星使用一个像素的固定�
 `images/data_truth/` 与 `images/notes/`。
 改变 `--width`、`--depth`、`--resolution` 或 `--center` 后加 `--recompute` 重算。
 
+### 区域 HDF5 导出、下载与本地重读
+
+直接复用 `load_region()` 的选择结果，调用 `save_region()` 保存；本地通过
+`Snapshot.from_region()` 读取，不需要完整 snapshot、offsets 或本地 catalogue：
+
+```python
+snapshot.load_region(center, half_size, {'gas': [
+    'Coordinates', 'Velocities', 'Masses', 'ParticleIDs', 'Density',
+    'InternalEnergy', 'ElectronAbundance', 'StarFormationRate',
+]})
+snapshot.save_region('environment.hdf5')  # 在中心化、旋转之前保存
+
+local = Snapshot.from_region('environment.hdf5')
+local.physical_units()
+local.center(cen=local.properties['region_center'], with_velocity=False)
+gas = local.gas
+```
+
+`GFM_Metals` 仅在源快照实际提供时加入字段列表；TNG50-1 snapshot 19 的镜像
+没有这个字段。导出脚本自动记录 `missing_optional_fields`，但八个必需字段
+任一缺失都会报错，不会生成伪造的丰度数据。没有 `GFM_Metals` 时，后续
+温度和氢数密度分析必须明确说明采用的组成近似，不应将其当作测得的元素丰度。
+
+文件采用 `PyTNG-region-v1` 格式：`Header` 保存区域粒子数与宇宙学参数，
+`SourceHeader` 保留原快照 Header（包括原始总粒子数的高、低位），`Region`
+保存原生单位的中心、半尺寸、形状和周期标记，`PartType*` 保存原始字段名
+及单位属性。加载时保留已有 loader 的浮点精度，**不是快照 float64 坐标的
+无损归档**；粒子 ID 不转浮点。全局 `BoxSize` 仍是模拟盒长，不是区域尺寸。
+允许在 `physical_units()` 后保存，写入时会恢复原生 TNG 单位；平移或旋转后
+拒绝保存，避免将中心化坐标误标为绝对盒坐标。不要在保存前直接修改数组。
+目标路径和 `.part` 路径均拒绝覆盖；失败不会发布完整文件，保留 `.part` 供检查。
+这一版本的**全快照扫描不能断点续扫**，下载则支持断点续传。
+
+完整可运行流程见 [`tests/example_export_region.py`](../tests/example_export_region.py)：
+
+```bash
+# 在 Lab 的项目根目录，用已验证的环境执行；默认仅做两个坐标分片的 I/O 预检
+python tests/example_export_region.py export
+# 确认预检开销后，串行扫描全部分片，导出目标周围全部气体
+python tests/example_export_region.py export --run
+```
+
+默认目标为 TNG50-1/snapshot 19/subhalo 11184。中心取 `SubhaloPos`，盒子半边长
+为宿主 `5*Group_R_Crit200`，并非只取其 halo 成员。不在导出时做温度、密度、
+SFR、流入或中心/卫星掩膜。脚本另外打包 `Catalog/Target`、`Catalog/Subhalo`、
+`Catalog/Group`、`Catalog/NearbySubhalos`；附近目录包含诊断排除球可能与盒子相交
+的 subhalo，**只供本地判断，不在导出时删除气体**。重读后目录在
+`local.region_catalog`，值保留 catalogue 的原生单位，不随 `physical_units()`
+自动换算，也不冒充完整 catalogue 或生成 halo 成员视图。
+
+脚本设置所有常用数值库线程为 1，逐分片记录进度；默认最多保留五百万气体
+单元，超出时中止而不是截断科学样本（可用 `--max-selected-gas` 显式调整）。
+完整扫描前的预估仅外推坐标扫描时间，不代表最终导出时间，也不能从前两个
+分片的选中数推断区域总气体数。保存后重读全部数据，再写同名 `.hdf5.json`
+manifest，记录文件字节数、SHA-256、气体数和任务完成标志。
+
+本地下载使用现有、有效的 Netscape cookie jar，不在代码中放密码或 API key：
+
+```bash
+python tests/example_export_region.py download \
+    --lab-base "$TNG_LAB_BASE" \
+    --remote-path 'TNG50-1_snap019_sub11184_region_5R200c.hdf5' \
+    --cookie-jar "$HOME/.tng_lab/labck.txt" \
+    --output "$HOME/sims.TNG/TNG50-1/regions/TNG50-1_snap019_sub11184_region_5R200c.hdf5"
+```
+
+`TNG_LAB_BASE` 是实际已授权的用户服务器根地址（以 `/lab/user/<account>` 结束）；
+`remote-path` 相对于 Lab home。下载走原始 `/files/` 字节接口，验证续传响应、
+manifest 字节数、SHA-256、HDF5 全字段可读及气体数量，成功后才发布最终路径。
+认证过期时明确报错，不将登录 HTML 当 HDF5。没有 manifest 的历史文件不适用
+这个自动下载命令。
+
 ## 势场对称性与圆度参考
 
 默认模型采用球对称 DM（`s`，lmax=0）、轴对称气体（`a`，lmax=4）及

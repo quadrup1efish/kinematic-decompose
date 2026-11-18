@@ -325,12 +325,17 @@ def _calculate_wrapping_repeat_array(self, x1, x2):
 
 renderers.ImageRenderer._calculate_wrapping_repeat_array = _calculate_wrapping_repeat_array
 
-from pynbody.snapshot.util import ContainerWithPhysicalUnitsOption 
+from pynbody.snapshot.util import ContainerWithPhysicalUnitsOption
+
+# Preserve the upstream method: calling self.physical_units here recurses after
+# installing the wrapper below (including on ordinary pynbody.new snapshots).
+if not hasattr(ContainerWithPhysicalUnitsOption, '_pytng_original_physical_units'):
+    ContainerWithPhysicalUnitsOption._pytng_original_physical_units = ContainerWithPhysicalUnitsOption.physical_units
 
 def physical_units(self, distance='kpc', velocity='km s^-1', mass='Msol', persistent=False):
     standard_units = self.properties.get('standard_units', [])
     if len(standard_units) == 0:
-        self.physical_units(distance, velocity, mass, persistent)
+        return self._pytng_original_physical_units(distance, velocity, mass, persistent)
     else:
         from functools import reduce
         dims = [units.kpc, units.km/units.s, units.Msol, units.a, units.h]

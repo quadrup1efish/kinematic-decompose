@@ -284,3 +284,180 @@ def test_real_tng100_3_region_and_transforms():
     snapshot.sideon(range=(0, 3000))
     np.testing.assert_allclose(np.linalg.norm(np.asarray(container['pos']), axis=1),
                                radius, rtol=3e-6)
+
+
+@pytest.mark.parametrize('physical', [False, True])
+def test_region_file_roundtrip(snapshot_files, tmp_path, physical):
+    output, _ = snapshot_files
+    snapshot = Snapshot(output, 99, header_source='snapshot')
+    progress = []
+    original = snapshot.load_region([0, 5, 5], .75, _fields(), block_size=7,
+                                    progress=lambda *args: progress.append(args))
+    assert [entry[0] for entry in progress] == [1, 2, 3]
+    assert progress[-1][2]['gas'] == len(original.gas)
+    positions = np.asarray(original['pos']).copy()
+    velocities = np.asarray(original['vel']).copy()
+    ids = np.asarray(original['iord']).copy()
+    if physical:
+        snapshot.physical_units()
+    path = snapshot.save_region(tmp_path / 'arbitrary_filename.hdf5')
+    assert not path.with_name(path.name + '.part').exists()
+    with h5py.File(path, 'r') as f:
+        assert f.attrs['Complete']
+        assert f['Header'].attrs['NumFilesPerSnapshot'] == 1
+        assert f['SourceHeader'].attrs['NumFilesPerSnapshot'] == 3
+        assert f['Region'].attrs['membership_selection'] == False
+        assert f['PartType0/ParticleIDs'].dtype == np.uint64
+    restored = Snapshot.from_region(path)
+    np.testing.assert_allclose(restored['pos'], positions, rtol=2e-7)
+    np.testing.assert_allclose(restored['vel'], velocities, rtol=2e-7)
+    np.testing.assert_array_equal(restored['iord'], ids)
+    assert restored['iord'].dtype == np.uint64
+    assert restored.ID == [] and not restored.group_catalog
+    np.testing.assert_array_equal(restored.properties['region_center'], [0, 5, 5])
+    restored.physical_units()
+    restored.center(cen=restored.properties['region_center'], with_velocity=False)
+    delta = positions - [0, 5, 5]
+    delta -= 10 * np.rint(delta / 10)
+    np.testing.assert_allclose(restored['pos'], delta * .25 / .6774, atol=1e-6)
+    with pytest.raises(FileExistsError):
+        snapshot.save_region(path)
+
+
+def test_region_file_empty_and_transformed(snapshot_files, tmp_path):
+    output, _ = snapshot_files
+    snapshot = Snapshot(output, 99, header_source='snapshot')
+    snapshot.load_region([2, 2, 2], .01, _fields())
+    path = snapshot.save_region(tmp_path / 'empty.hdf5')
+    restored = Snapshot.from_region(path)
+    assert len(restored.container) == 0
+    restored.physical_units()
+    snapshot.load_region([0, 5, 5], .75, _fields())
+    snapshot.center(cen=snapshot.properties['region_center'], with_velocity=False)
+    with pytest.raises(ValueError, match='before centering'):
+        snapshot.save_region(tmp_path / 'centered.hdf5')
+
+
+def test_region_file_gas_thermodynamics(snapshot_files, tmp_path):
+    output, _ = snapshot_files
+    fields = ['Density', 'InternalEnergy', 'ElectronAbundance', 'GFM_Metals',
+              'StarFormationRate']
+    for path in (Path(output) / 'snapdir_099').glob('*.hdf5'):
+        with h5py.File(path, 'r+') as f:
+            n = len(f['PartType0/Coordinates'])
+            for name in fields:
+                shape = (n, 10) if name == 'GFM_Metals' else (n,)
+                f['PartType0'][name] = np.full(shape, .1, dtype='f4')
+    snapshot = Snapshot(output, 99, header_source='snapshot')
+    snapshot.load_region([0, 5, 5], .75, {'gas': _fields()['gas'] + fields})
+    path = snapshot.save_region(tmp_path / 'gas.hdf5')
+    restored = Snapshot.from_region(path)
+    from kinematic_decompose.PyTNG.tng_config import get_particle_field_name
+    for name in fields:
+        alias = get_particle_field_name(name)
+        np.testing.assert_array_equal(restored.gas[alias], snapshot.gas[alias])
+        assert restored.gas[alias].units == snapshot.gas[alias].units
+    snapshot.physical_units()
+    restored.physical_units()
+    np.testing.assert_array_equal(restored.gas['rho'], snapshot.gas['rho'])
+
+
+def test_nearby_catalog_ignores_scalar_count(monkeypatch):
+    import example_export_region as workflow
+    arrays = dict(count=2, SubhaloPos=np.array([[0., 0., 0.], [5., 5., 5.]]),
+                  SubhaloVel=np.zeros((2, 3)), SubhaloGrNr=np.array([0, 1]),
+                  SubhaloHalfmassRadType=np.zeros((2, 6)))
+    monkeypatch.setattr(workflow.il.groupcat, 'loadSubhalos', lambda *a, **kw: arrays)
+    result = workflow.nearby_subhalos('unused', 99, np.zeros(3), 1.,
+                                     dict(boxsize=10., a=1., h=.6774))
+    np.testing.assert_array_equal(result['SubhaloID'], [0])
+    assert 'count' not in result
+
+
+def test_export_preflight_optional_metals_and_highword(snapshot_files):
+    import example_export_region as workflow
+    output, _ = snapshot_files
+    for path in (Path(output) / 'snapdir_099').glob('*.hdf5'):
+        with h5py.File(path, 'r+') as f:
+            n = len(f['PartType0/Coordinates'])
+            for name in ('Density', 'InternalEnergy', 'ElectronAbundance', 'StarFormationRate'):
+                f['PartType0'][name] = np.ones(n, dtype='f4')
+            # Deliberately exercise the high-word calculation in the preflight.
+            f['Header'].attrs['NumPart_Total'] = np.array([36, 0, 0, 0, 0, 0], dtype='u4')
+            f['Header'].attrs['NumPart_Total_HighWord'] = np.array([2, 0, 0, 0, 0, 0], dtype='u4')
+    result = workflow.preflight(output, 99, np.array([0., 5., 5.]), .75, sample_files=1)
+    assert result['total_gas'] == 36 + 2 * 2**32
+    assert result['coordinate_bytes'] == result['total_gas'] * 3 * 8
+    assert result['missing_optional_fields'] == ['GFM_Metals']
+    assert 'GFM_Metals' not in result['fields']
+    with h5py.File(Path(output) / 'snapdir_099/snap_099.0.hdf5', 'r+') as f:
+        del f['PartType0/ElectronAbundance']
+    with pytest.raises(KeyError, match='ElectronAbundance'):
+        workflow.preflight(output, 99, np.zeros(3), 1., sample_files=1)
+
+
+
+
+def test_region_download_manifest_resume_and_integrity(snapshot_files, tmp_path):
+    import functools
+    import http.server
+    import json
+    import threading
+    import example_export_region as workflow
+
+    output, _ = snapshot_files
+    snapshot = Snapshot(output, 99, header_source='snapshot')
+    snapshot.load_region([0, 5, 5], .75, _fields())
+    remote = tmp_path / 'remote'
+    path = snapshot.save_region(remote / 'region.hdf5', catalog={
+        'Target': {'SubhaloID': 11184}, 'Subhalo': {'SubhaloPos': [0., 5., 5.]}})
+    manifest = dict(file=path.name, bytes=path.stat().st_size,
+                    sha256=workflow.sha256(path), gas_count=len(snapshot.gas), complete=True)
+    (remote / 'region.hdf5.json').write_text(json.dumps(manifest))
+    cookie = tmp_path / 'cookies.txt'
+    cookie.write_text('# Netscape HTTP Cookie File\n')
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            # Exercise resume with an explicit, validated Content-Range.
+            if self.headers.get('Range') and self.path.endswith('.hdf5'):
+                data = path.read_bytes()
+                offset = int(self.headers['Range'].split('=')[1].split('-')[0])
+                self.send_response(206)
+                self.send_header('Content-Range', f'bytes {offset}-{len(data)-1}/{len(data)}')
+                self.send_header('Content-Length', str(len(data) - offset))
+                self.end_headers()
+                self.wfile.write(data[offset:])
+            else:
+                super().do_GET()
+
+    server = http.server.HTTPServer(('127.0.0.1', 0),
+                                   functools.partial(Handler, directory=str(remote)))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f'http://127.0.0.1:{server.server_port}'
+    # Match the Lab's /files/ URL namespace without an external network.
+    (remote / 'files').symlink_to(remote, target_is_directory=True)
+    try:
+        local = tmp_path / 'downloaded.hdf5'
+        Path(str(local) + '.part').write_bytes(path.read_bytes()[:1000])
+        workflow.download_region(base, 'region.hdf5', cookie, local)
+        assert local.read_bytes() == path.read_bytes()
+        restored = Snapshot.from_region(local)
+        assert restored.region_catalog['Target']['SubhaloID'] == 11184
+        np.testing.assert_array_equal(restored['iord'], snapshot['iord'])
+        with pytest.raises(FileExistsError):
+            workflow.download_region(base, 'region.hdf5', cookie, local)
+        manifest['sha256'] = '0' * 64
+        (remote / 'region.hdf5.json').write_text(json.dumps(manifest))
+        bad = tmp_path / 'bad.hdf5'
+        with pytest.raises(ValueError, match='SHA-256'):
+            workflow.download_region(base, 'region.hdf5', cookie, bad)
+        assert not bad.exists()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

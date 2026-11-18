@@ -14,7 +14,7 @@ from .tng_config import (PARTICLE_DTYPE, UnitComvingLength, enforce_dtype,
 
 
 def load_region(basePath, snapNum, center, half_size, fields, shape='box',
-                periodic=True, block_size=1_000_000):
+                periodic=True, block_size=1_000_000, progress=None):
     """Scan coordinates in row blocks; retain only the selected particles.
 
     Non-coordinate fields are read only in blocks containing selected rows.
@@ -25,6 +25,7 @@ def load_region(basePath, snapNum, center, half_size, fields, shape='box',
         props = header_to_properties(
             f['Header'], infer_run_from_dir(basePath, basePath=basePath), basePath, snapNum)
         num_files = int(f['Header'].attrs['NumFilesPerSnapshot'])
+        source_header = dict(f['Header'].attrs)
     paths = [snapPath(basePath, snapNum, i) for i in range(num_files)]
     for path in paths:
         if not Path(path).is_file():
@@ -57,14 +58,21 @@ def load_region(basePath, snapNum, center, half_size, fields, shape='box',
     }
     data = {family: {name: [] for name in names}
             for family, names in requested.items()}
+    specs = {family: {} for family in requested}
     boxsize = float(props['boxsize'])
-    for path in paths:
+    selected = {family: 0 for family in requested}
+    for chunk, path in enumerate(paths, 1):
         with h5py.File(path, 'r') as f:
             for family, names in requested.items():
                 group_name = f'PartType{partTypeNum(family)}'
                 if group_name not in f:
                     continue
                 group = f[group_name]
+                for name in names:
+                    if family == 'dm' and name == 'Masses':
+                        specs[family][name] = ((), np.dtype(PARTICLE_DTYPE))
+                    else:
+                        specs[family][name] = (group[name].shape[1:], group[name].dtype)
                 for start in range(0, len(group['Coordinates']), block_size):
                     stop = start + block_size
                     pos = group['Coordinates'][start:stop]
@@ -76,6 +84,7 @@ def load_region(basePath, snapNum, center, half_size, fields, shape='box',
                             np.sum(delta**2, axis=1) <= half_size**2)
                     if not mask.any():
                         continue
+                    selected[family] += int(mask.sum())
                     for name in names:
                         if family == 'dm' and name == 'Masses':
                             values = np.full(mask.sum(), float(props['mDM']),
@@ -86,6 +95,8 @@ def load_region(basePath, snapNum, center, half_size, fields, shape='box',
                             if np.issubdtype(values.dtype, np.floating):
                                 values = values.astype(PARTICLE_DTYPE, copy=False)
                         data[family][name].append(values)
+        if progress is not None:
+            progress(chunk, num_files, selected.copy())
 
     counts = {family: sum(len(v) for v in arrays['Coordinates'])
               for family, arrays in data.items()}
@@ -97,6 +108,14 @@ def load_region(basePath, snapNum, center, half_size, fields, shape='box',
     props['region_shape'] = shape
     props['region_periodic'] = periodic
     container.properties = props
+    container._region_fields = requested
+    container._region_source_header = source_header
+    container._region_field_specs = specs
+    for family, names in requested.items():
+        for name in names:
+            specs[family].setdefault(
+                name, ((3,) if name in ('Coordinates', 'Velocities') else (),
+                       np.dtype('u8' if name == 'ParticleIDs' else PARTICLE_DTYPE)))
     for value in props.values():
         if isinstance(value, SimArray):
             value.sim = container
