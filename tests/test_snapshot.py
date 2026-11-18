@@ -153,6 +153,7 @@ SUB_ID = 550475
 SNAPNUM = 99
 
 
+@pytest.mark.slow
 def test_filename_helpers():
     """Naming convention round-trip + legacy parsing."""
     std = make_cutout_filename(SNAPNUM, SUB_ID,
@@ -184,6 +185,7 @@ def test_filename_helpers():
     print("filename helpers: OK")
 
 
+@pytest.mark.slow
 def test_load_cutout():
     """Load the full cutout through the Snapshot interface."""
     snapshot = Snapshot(basePath="/Users/yuwa/sims.TNG/TNG50-1/output",

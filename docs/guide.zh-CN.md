@@ -266,7 +266,15 @@ Fourier 分量，四个主轴点则混叠 m=4。传入更高阶势时，需要�
 
 ## 测试
 
-使用 `python -m pytest tests -q -rs` 运行自动收集的回归测试。
+使用 `python -m pytest tests -q -rs` 运行自动收集的回归测试。默认排除
+`slow`（依赖本地 TNG 数据或完整快照）与 `benchmark`（计时测量和性能图重绘）：
+
+```bash
+python -m pytest tests -q -rs              # 默认：正确性回归
+python -m pytest tests -q -rs -m slow      # 使用本地数据的集成测试
+python -m pytest tests -q -rs -m benchmark # 计时与性能图重绘
+```
+
 可选的进程隔离参考测试通过 `AGAMA_PYTHON`（解析模型）和
 `AGAMA_REFERENCE_PYTHON`（INI/求值兼容性）指定安装 Agama 的解释器。
 兼容性测试共享导出的系数，只比较未改变的离轴求值区域，不要求粒子拟合
@@ -276,8 +284,8 @@ Fourier 分量，四个主轴点则混叠 m=4。传入更高阶势时，需要�
 测试按主题合并；原本需要显式选择 example 文件的算法测试，现已纳入默认收集：
 
 - `tests/test_energy_cut.py` — 当前 skew-t/KDE 回归，以及 `get_Ecut` 初始化/fallback 的 21 个测试、19 个合成场景；直接运行该文件仍可绘制 TRUE（绿虚线）/ DETECTED（红实线）对照图。
-- `tests/test_gaussian_mixture.py` — GMM 行为、N 缩放基准，以及全部 18 个 mini-batch 样本复杂度与 TV 距离等价性测试。
-- `tests/test_skew_normal_mixtures.py` — 独立公开的 `SkewNormalMixtures` 接口、聚类、能量截断和性能测试。
+- `tests/test_gaussian_mixture.py` — GMM 行为、mini-batch 样本复杂度与 TV 距离等价性测试及 batch-size 图；N 缩放计时由 `benchmark` 标记单独运行。
+- `tests/test_skew_normal_mixtures.py` — 独立公开的 `SkewNormalMixtures` 接口、聚类和能量截断测试；计时对照由 `benchmark` 标记单独运行。
 - `tests/test_snapshot.py` — cutout 加载、文件名工具和周期定心。cutout 集成测试依赖文件中指定的本地 TNG50-1 数据；真实星系 pipeline 另由 `tests/test_real_galaxy_smoke.py` 验证。
 - `tests/test_calculation_guardrails.py` — pipeline 防护与非轴对称势的方位平均圆轨道参考。
 - `tests/test_potential_density.py` — 密度、Poisson 一致性、软化卷积与径向多极矩。

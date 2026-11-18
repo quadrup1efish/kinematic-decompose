@@ -5,7 +5,7 @@ import pickle
 from types import SimpleNamespace
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
+
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import LogNorm
 import pytest
@@ -302,366 +302,72 @@ def generate_data(n_samples, n_features, weights, means, precisions, covariance_
     X = np.vstack(X)
     return X
 
-def test_speed():
-    n_samples = 100000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-3, -3], [3, 3]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-
-    start = time()
-    GMM_full = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=100).fit(X, use_mini_batch=False)
-    end = time()
-    full_time = end - start
-
-    start = time()
-    GMM_mini = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=100).fit(X, use_mini_batch=True)
-    end = time()
-    mini_time = end - start
-
-    n_iter_full = len(GMM_full.lower_bounds_)
-    time_per_iter_full = full_time / n_iter_full
-    time_axis_full = np.arange(n_iter_full) * time_per_iter_full
-
-    n_iter_mini = len(GMM_mini.lower_bounds_)
-    time_per_iter_mini = mini_time / n_iter_mini
-    time_axis_mini = np.arange(n_iter_mini) * time_per_iter_mini
-
-    plt.figure(figsize=(10, 6))
-    plt.plot(time_axis_full, GMM_full.lower_bounds_, 'b-', linewidth=2, label=f'Full Batch ({full_time:.2f}s)')
-    plt.plot(time_axis_mini, GMM_mini.lower_bounds_, 'r-', linewidth=2, label=f'Mini Batch ({mini_time:.2f}s)')
-    plt.xlabel('Time (s)', fontsize=12)
-    plt.ylabel('Lower Bound', fontsize=12)
-    plt.title('Convergence Comparison: Full Batch vs Mini Batch', fontsize=14)
-    plt.legend(fontsize=11)
-    plt.tight_layout()
-    plt.show()
-
-
-def test_mini_batch():
-    n_samples = 50000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-3, -3], [3, 3]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-
-    start = time()
-    GMM = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=False)
-    end = time()
-    labels = GMM.predict(X)
-    fig,axes = plt.subplots(2,2)
-    for label in np.unique(labels):
-        axes[0,0].scatter(X[labels==label,0], X[labels==label,1])
-    axes[0,1].plot(GMM.lower_bounds_, label=f'full batch time={end-start:.2f}')
-    axes[0,1].legend()
-
-    start = time()
-    GMM = GaussianMixture(n_components=2, init_params='random', batch_size=10240, min_iter=1000).fit(X, use_mini_batch=True)
-    end = time()
-    labels = GMM.predict(X)
-    for label in np.unique(labels):
-        axes[1,0].scatter(X[labels==label,0], X[labels==label,1])
-    axes[1,1].plot(GMM.lower_bounds_, label=f'mini batch time={end-start:.2f}')
-    axes[1,1].legend()
-    plt.show()
-
 def test_sample_weight():
-    n_samples = 10000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-2, -2], [2, 2]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-
-    n_quantiles_x = 50
-    n_quantiles_y = 50
-
-    x_sorted = np.sort(X[:, 0])
-    y_sorted = np.sort(X[:, 1])
-
-    x_edges = x_sorted[np.linspace(0, len(x_sorted)-1, n_quantiles_x+1).astype(int)]
-    y_edges = y_sorted[np.linspace(0, len(y_sorted)-1, n_quantiles_y+1).astype(int)]
-
-    hist, x_edges, y_edges = np.histogram2d(
-        X[:, 0], X[:, 1],
-        bins=[x_edges, y_edges]
-    )
-    sample_weight = hist.T.ravel()
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-    xx, yy = np.meshgrid(x_centers, y_centers)
-    points = np.column_stack([xx.ravel(), yy.ravel()])
-    fig,axes = plt.subplots(2,2)
-
-    GMM = GaussianMixture(n_components=2, init_params='random', batch_size=10240, max_iter=1000, min_iter=1000).fit(X, use_mini_batch=True)
-    labels = GMM.predict(X)
-
-    for label in np.unique(labels):
-        axes[0,0].scatter(X[labels==label,0], X[labels==label,1])
-        mean = GMM.means_[label]
-        cov  = GMM.covariances_[label]
-
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        eigvals = np.maximum(eigvals, 0)
-
-        widths = 2 * np.sqrt(2) * np.sqrt(eigvals)
-        angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-
-        ellipse = patches.Ellipse(
-            xy=mean,
-            width=widths[0],
-            height=widths[1],
-            angle=angle,
-            edgecolor='k',
-            facecolor='none',
-            linewidth=3
-        )
-
-        axes[0,0].add_patch(ellipse)
-    axes[0,1].plot(GMM.lower_bounds_[1:], label=f'particle')
-    axes[0,1].set_xscale('log')
-    axes[0,1].legend()
-    GMM = GaussianMixture(n_components=2, init_params='random', batch_size=10240, max_iter=1000, min_iter=1000).fit(points, use_mini_batch=True, sample_weight=sample_weight)
-    labels = GMM.predict(X)
-    for label in np.unique(labels):
-        axes[1,0].scatter(X[labels==label,0], X[labels==label,1])
-        mean = GMM.means_[label]
-        cov  = GMM.covariances_[label]
-
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        eigvals = np.maximum(eigvals, 0)
-
-        widths = 2 * np.sqrt(2) * np.sqrt(eigvals)
-        angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-
-        ellipse = patches.Ellipse(
-            xy=mean,
-            width=widths[0],
-            height=widths[1],
-            angle=angle,
-            edgecolor='k',
-            facecolor='none',
-            linewidth=3
-        )
-
-        axes[1,0].add_patch(ellipse)
-    axes[1,1].plot(GMM.lower_bounds_[1:], label=f'density')
-    axes[1,1].legend()
-    axes[1,1].set_xscale('log')
-    plt.show()
+    """A weighted single Gaussian matches analytic moments and repeated samples."""
+    X = np.array([[-2., -1.], [1., 2.], [3., -2.], [50., 50.]])
+    weights = np.array([1, 2, 3, 0])
+    mean = np.average(X, axis=0, weights=weights)
+    centered = X - mean
+    covariance = (centered.T * weights) @ centered / weights.sum() + 1e-6 * np.eye(2)
+    model = GaussianMixture(n_components=1, init_params='random', random_state=42,
+                            max_iter=10, min_iter=2).fit(
+                                X, sample_weight=weights, use_mini_batch=False)
+    repeated = GaussianMixture(n_components=1, init_params='random', random_state=42,
+                               max_iter=10, min_iter=2).fit(
+                                   np.repeat(X, weights, axis=0), use_mini_batch=False)
+    np.testing.assert_allclose(model.means_[0], mean, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.covariances_[0], covariance, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.means_, repeated.means_, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.covariances_, repeated.covariances_, rtol=1e-12, atol=1e-12)
 
 def test_initialize():
-    n_samples = 1000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-2, -2], [2, 2]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-    GMM = GaussianMixture(n_components=2, weights_init=weights, means_init=means, precisions_init=precisions['full'], max_iter=100, min_iter=100)
-    GMM.fit(X)
-    labels = GMM.predict(X)
-    fig,axes = plt.subplots(1,2)
-    for label in np.unique(labels):
-        axes[0].scatter(X[labels==label,0], X[labels==label,1])
-        mean = GMM.means_[label]
-        cov  = GMM.covariances_[label]
+    """Explicit parameters survive zero-iteration fitting and define its density."""
+    from scipy.special import logsumexp
+    from scipy.stats import multivariate_normal
 
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        eigvals = np.maximum(eigvals, 0)
+    weights = np.array([.6, .4])
+    means = np.array([[-2., -1.], [2., 1.]])
+    covariance = np.array([[[.7, .2], [.2, .9]], [[1., -.1], [-.1, .5]]])
+    precisions = np.linalg.inv(covariance)
+    X = np.random.default_rng(42).normal(size=(32, 2))
+    model = GaussianMixture(n_components=2, weights_init=weights, means_init=means,
+                            precisions_init=precisions, max_iter=0, min_iter=0).fit(
+                                X, use_mini_batch=False)
+    np.testing.assert_allclose(model.weights_, weights, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.means_, means, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.covariances_, covariance, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(model.precisions_, precisions, rtol=1e-12, atol=1e-12)
+    expected = logsumexp(np.column_stack([
+        np.log(weight) + multivariate_normal.logpdf(X, mean=mean, cov=cov)
+        for weight, mean, cov in zip(weights, means, covariance)]), axis=1)
+    np.testing.assert_allclose(model.score_samples(X), expected, rtol=1e-12, atol=1e-12)
+    assert model.n_iter_ == 0
 
-        widths = 2 * np.sqrt(2) * np.sqrt(eigvals)
-        angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+def test_warm_start(monkeypatch):
+    """A second fit continues EM without reinitializing the mixture."""
+    rng = np.random.default_rng(42)
+    X = np.concatenate([rng.normal(-1., 1., (80, 2)), rng.normal(1., 1., (80, 2))])
+    model = GaussianMixture(n_components=2, init_params='random', random_state=42,
+                            max_iter=5, min_iter=5, warm_start=True).fit(
+                                X, use_mini_batch=False)
+    previous_score = model.score(X)
+    continuation = GaussianMixture(
+        n_components=2, weights_init=model.weights_.copy(), means_init=model.means_.copy(),
+        precisions_init=model.precisions_.copy(), max_iter=5, min_iter=5).fit(
+            X, use_mini_batch=False)
 
-        ellipse = patches.Ellipse(
-            xy=mean,
-            width=widths[0],
-            height=widths[1],
-            angle=angle,
-            edgecolor='k',
-            facecolor='none',
-            linewidth=3
-        )
+    def unexpected_initialization(*args, **kwargs):
+        raise AssertionError('warm_start must not reinitialize fitted parameters')
 
-        axes[0].add_patch(ellipse)
-    axes[1].plot(GMM.lower_bounds_[1:], label=f'density')
-    axes[1].legend()
-    axes[1].set_xscale('log')
-    plt.show()
+    monkeypatch.setattr(model, '_initialize_parameters', unexpected_initialization)
+    model.fit(X, use_mini_batch=False)
+    assert model.score(X) >= previous_score - 1e-12
+    np.testing.assert_allclose(model.weights_, continuation.weights_, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(model.means_, continuation.means_, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(model.covariances_, continuation.covariances_, rtol=1e-10, atol=1e-12)
 
-def test_warm_start():
-    fig,axes = plt.subplots(1,2)
-    n_samples = 1000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-2, -2], [2, 2]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-    axes[0].scatter(X[:, 0], X[:,1])
-    iter = 25
-    ini_iter = 0
-    GMM = GaussianMixture(n_components=2, init_params="random", max_iter=iter, min_iter=iter, warm_start=True)
-    for _ in range(2):
-        GMM.fit(X)
-        labels = GMM.predict(X)
-        for label in np.unique(labels):
-            mean = GMM.means_[label]
-            cov  = GMM.covariances_[label]
 
-            eigvals, eigvecs = np.linalg.eigh(cov)
-            eigvals = np.maximum(eigvals, 0)
-
-            widths = 1 * np.sqrt(2) * np.sqrt(eigvals)
-            angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-
-            ellipse = patches.Ellipse(
-                xy=mean,
-                width=widths[0],
-                height=widths[1],
-                angle=angle,
-                edgecolor='k',
-                facecolor='none',
-                linewidth=1.5
-            )
-
-            axes[0].add_patch(ellipse)
-        axes[1].plot(np.arange(ini_iter+1,ini_iter+iter+1,1), GMM.lower_bounds_)
-        ini_iter += iter
-    plt.show()
-
-def test_add_component():
-    fig,axes = plt.subplots(1,2)
-    n_samples = 1000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-2, -2], [2, 2]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.8]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-    axes[0].scatter(X[:, 0], X[:,1])
-    iter = 25
-    ini_iter = 0
-    GMM = GaussianMixture(n_components=1, init_params="random", max_iter=iter, min_iter=iter, warm_start=True)
-    for _ in range(2):
-        GMM.fit(X)
-        labels = GMM.predict(X)
-        for label in np.unique(labels):
-            mean = GMM.means_[label]
-            cov  = GMM.covariances_[label]
-
-            eigvals, eigvecs = np.linalg.eigh(cov)
-            eigvals = np.maximum(eigvals, 0)
-
-            widths = 1 * np.sqrt(2) * np.sqrt(eigvals)
-            angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
-
-            ellipse = patches.Ellipse(
-                xy=mean,
-                width=widths[0],
-                height=widths[1],
-                angle=angle,
-                edgecolor='k',
-                facecolor='none',
-                linewidth=1.5
-            )
-
-            axes[0].add_patch(ellipse)
-        axes[1].plot(np.arange(ini_iter+1,ini_iter+iter+1,1), GMM.lower_bounds_)
-        ini_iter += iter
-        GMM.means_ = np.vstack([GMM.means_, means[1]])
-        new_cov = np.linalg.inv(precisions['full'][1])
-        GMM.covariances_ = np.concatenate(
-            [GMM.covariances_, new_cov[None, :, :]],
-            axis=0
-        )
-        GMM.weights_ = np.append(GMM.weights_, weights[1])
-        GMM.weights_ /= GMM.weights_.sum()
-        GMM.n_components += 1
-        from kinematic_decompose.mixture._gaussian_mixture import _compute_precision_cholesky
-        GMM.precisions_cholesky_ = _compute_precision_cholesky(
-            GMM.covariances_, GMM.covariance_type
-        )
-    plt.show()
-
-def test_initialize_sample_weight():
-    n_samples = 100000
-    n_features = 2
-    weights = [0.6, 0.4]
-    means = [[-2, -2], [2, 2]]
-    covariance_type = "full"
-    precisions = {
-        covariance_type: [
-            [[0.5, 0], [0, 0.5]],
-            [[1, 0.3], [0.3, 0.1]]
-        ]
-    }
-    X = generate_data(n_samples, n_features, weights, means, precisions, covariance_type)
-
-    bins=100
-
-    from scipy.stats import binned_statistic_2d
-    hist, x_edges, y_edges, binnumber = binned_statistic_2d(
-        X[:, 0], X[:, 1],
-        values=None,
-        statistic='count',
-        bins=bins,
-        expand_binnumbers=False
-    )
-
-    sample_weight = hist.ravel(order='C')
-
-    x_centers = (x_edges[:-1] + x_edges[1:]) / 2
-    y_centers = (y_edges[:-1] + y_edges[1:]) / 2
-    xx, yy = np.meshgrid(x_centers, y_centers, indexing='ij')
-    points = np.column_stack([xx.ravel(order='C'), yy.ravel(order='C')])
-    points = points[sample_weight > 0]
-    sample_weight = sample_weight[sample_weight > 0]
-    from sklearn.cluster import KMeans
-    kmeans_model = KMeans(n_clusters=2).fit(X)
-    plt.pcolormesh(xx, yy, hist, cmap='hot', shading='auto')
-    plt.colorbar()
-    #plt.scatter(X[:,0], X[:,1], s=1, alpha=1000/n_samples)
-    plt.scatter(kmeans_model.cluster_centers_[:,0], kmeans_model.cluster_centers_[:,1])
-    kmeans_model = KMeans(n_clusters=2).fit(points, sample_weight)
-    plt.scatter(kmeans_model.cluster_centers_[:,0], kmeans_model.cluster_centers_[:,1])
-    plt.show()
-
+@pytest.mark.benchmark
 def test_scaling_with_n_samples():
     """Average per-iteration fit time vs n_samples for full vs mini batch.
 
@@ -809,14 +515,7 @@ def test_scaling_with_n_samples():
 
 
 if __name__ == "__main__":
-    test_speed()
     test_scaling_with_n_samples()
-    #test_mini_batch()
-    #test_initialize_sample_weight()
-    #test_sample_weight()
-    #test_initialize()
-    #test_warm_start()
-    #test_add_component()
 
 
 # Example batch size
@@ -995,21 +694,10 @@ def test_polylog_variant():
     assert s_plain < s_poly < 5e6
 
 
-def test_polylog_off_by_default():
-    """Default use_polylog=False: no logarithmic inflation."""
-    s = BaseMixture.suggested_batch_size(6, 3, 0.05)
-    assert s == 21600
-
 
 # ---------------------------------------------------------------------------
 # Scaling laws
 # ---------------------------------------------------------------------------
-def test_scaling_with_eps():
-    """S scales as 1/eps^2: halving eps quadruples the batch."""
-    s1 = BaseMixture.suggested_batch_size(6, 3, 0.10)
-    s2 = BaseMixture.suggested_batch_size(6, 3, 0.05)
-    assert s2 == 4 * s1
-
 
 def test_scaling_with_k_and_d():
     """S scales linearly in k and quadratically in d."""
@@ -1144,6 +832,9 @@ def test_hard_separation_tv_decays_with_batch():
     X_easy = _two_gaussians_d(1, n_samples=200000, separation=4.0)
     X_hard = _two_gaussians_d(1, n_samples=200000, separation=1.0)
     tvs_easy, tvs_hard = [], []
+    # Fixed budget (no early stop): this test measures the -1/2 law, and the
+    # TV error of a barely separable mixture is not monotone in the iteration
+    # count, so the endpoint must not depend on the convergence rule.
     for S in (800, 3200, 12800):
         m_easy = GaussianMixture(n_components=2, init_params="kmeans",
                                  max_iter=40, min_iter=40, random_state=42,
@@ -1442,6 +1133,7 @@ def test_visualize_batch_size_parameter_scan():
     assert not fig.legends
     plt.close(fig)
 
+
 # ---------------------------------------------------------------------------
 # Stopping rule: the local drift-rate bound must be driven by the noise of the
 # estimate, not by a single step-to-step fluctuation.
@@ -1497,8 +1189,6 @@ def test_drift_bound_is_a_rate_not_a_budget_projection(slope):
     assert bound == pytest.approx(slope)
 
 
-
-
 @pytest.mark.parametrize("mini_batch", [False, True])
 def test_default_min_iter_is_fifty(mini_batch):
     """The default blocks early stopping before 50 steps in both branches."""
@@ -1508,7 +1198,6 @@ def test_default_min_iter_is_fifty(mini_batch):
     model.fit(X, use_mini_batch=mini_batch)
     assert model.converged_
     assert model.n_iter_ >= 50
-
 
 
 @pytest.mark.parametrize("mini_batch", [False, True])

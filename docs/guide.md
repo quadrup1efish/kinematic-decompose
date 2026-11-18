@@ -246,7 +246,16 @@ All four potential-validation panels display $0.1\leq r\leq10$ kpc. The particle
 
 ## Testing
 
-Run the collected regression suite with `python -m pytest tests -q -rs`.
+Run the collected regression suite with `python -m pytest tests -q -rs`. By
+default this excludes `slow` tests (local TNG data or full snapshots) and
+`benchmark` tests (wall-time measurements and performance-figure regeneration):
+
+```bash
+python -m pytest tests -q -rs              # default: correctness regressions
+python -m pytest tests -q -rs -m slow      # integration tests with local data
+python -m pytest tests -q -rs -m benchmark # timings and figure regeneration
+```
+
 For optional out-of-process references, set `AGAMA_PYTHON` (analytic models)
 and `AGAMA_REFERENCE_PYTHON` (INI/evaluator compatibility) to an Agama-enabled
 interpreter. Compatibility checks share exported coefficients and compare the
@@ -259,8 +268,8 @@ by topic; algorithm tests previously requiring explicit example-file selection
 are now included in the default collection:
 
 - `tests/test_energy_cut.py` — current skew-t/KDE regressions and the 21 `get_Ecut` initializer/fallback cases across 19 synthetic scenarios; the TRUE (green dashed) vs DETECTED (red solid) visualization remains available by running this file directly.
-- `tests/test_gaussian_mixture.py` — GMM behaviour, N-scaling, and all 18 mini-batch sample-complexity and total-variation equivalence tests.
-- `tests/test_skew_normal_mixtures.py` — the separately exported `SkewNormalMixtures` API, clustering, energy-cut and performance tests.
+- `tests/test_gaussian_mixture.py` — GMM behaviour, the mini-batch sample-complexity/TV-equivalence tests, and the batch-size figure; the N-scaling timing runs under the `benchmark` marker.
+- `tests/test_skew_normal_mixtures.py` — the separately exported `SkewNormalMixtures` API, clustering and energy-cut tests; its wall-time comparisons run under the `benchmark` marker.
 - `tests/test_snapshot.py` — cutout loading, filename helpers and periodic centering. Cutout integration tests require the local TNG50-1 data path specified in the file; `tests/test_real_galaxy_smoke.py` separately covers the real-galaxy pipeline.
 - `tests/test_calculation_guardrails.py` — pipeline guardrails and the non-axisymmetric, azimuthally averaged circular reference.
 - `tests/test_potential_density.py` — density, Poisson consistency, softened convolution and radial multipole moments.

@@ -35,4 +35,8 @@ requires = ["setuptools==82.0.1", "wheel==0.41.2", "pybind11==2.13.6"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-markers = ["slow: end-to-end tests using real galaxy data"]
+addopts = "-m 'not slow and not benchmark'"
+markers = [
+    "slow: integration tests requiring local TNG data or full snapshots",
+    "benchmark: wall-time measurements and figure regeneration; run explicitly",
+]

@@ -88,6 +88,7 @@ def test_incomplete_or_inconsistent_measurements_are_rejected(damage):
         benchmark.validate_results(report)
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("symmetry", list(benchmark.SYMMETRIES))
 def test_real_native_worker_times_only_construction(tmp_path, symmetry):
     input_path = tmp_path / "input.npz"
