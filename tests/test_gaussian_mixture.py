@@ -391,27 +391,47 @@ def test_implicit_uniform_weights_match_explicit_ones(monkeypatch, use_mini_batc
         np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
 
 
+def _match_components(reference, other):
+    """Reorder ``other``'s columns to maximise agreement with ``reference``."""
+    from scipy.optimize import linear_sum_assignment
+
+    agreement = reference.T @ other
+    rows, cols = linear_sum_assignment(-agreement)
+    order = np.empty(agreement.shape[0], dtype=int)
+    order[rows] = cols
+    return other[:, order]
+
+
+def _posterior_difference(reference, other):
+    """Return (mean |dP|, max |dP|, hard-label flip fraction) after matching."""
+    matched = _match_components(reference, other)
+    delta = np.abs(reference - matched)
+    flip = np.mean(reference.argmax(axis=1) != matched.argmax(axis=1))
+    return float(delta.mean()), float(delta.max()), float(flip)
+
+
 @pytest.mark.benchmark
 def test_scaling_with_n_samples():
     """Average per-iteration fit time vs n_samples for full vs mini batch.
 
-    Fixed 10 EM iterations (min_iter = max_iter = 10), n_samples on a
-    log-space grid of 10 points from 1e4 to 1e6 (K=2, d=2). Reports the
-    median time of ONE iteration (total / 10) over 10 repeated mini-batch
-    fits per N, with 16%-84% (1-sigma) spread bands for stability, plus
+    On a log-space grid of 10 points from 1e4 to 1e6 (K=2, d=2),
+    report median fit time divided by the actual iteration count over
+    20 paired runs per N, with 16th–84th percentile bands, plus
     the old pre-optimisation mini path (full-dataset init + full
-    permutation, O(N) per fit) as a reference. The right y-axis shows the
-    Bayes factor BF = exp(LB_full - LB_mini) of the full- vs mini-batch
-    converged solutions on a log scale (N cancels), with the y-range
-    spanning the Jeffreys "anecdotal" region [1/3, 3]. Measured BF ≈ 1
-    (0.96–1.01 in this run), i.e. no evidence of a difference - the two
-    convergence paths are statistically indistinguishable, not merely
-    close. The full/mini curves share the same synthetic data per N.
+    permutation, O(N) per fit) only for the regression assertion; it is not
+    plotted. Dashed guides show the ideal O(N) and O(1) scalings. The right
+    y-axis shows how much the two fits actually differ: the mean absolute
+    change in per-particle assignment probability after matching the
+    component order, over the same synthetic data. It replaces the earlier
+    exp(mean-log-likelihood difference) curve, which is ~1 by construction
+    and therefore not a decision statistic. The full/mini curves share the
+    same synthetic data per N.
     batch_size=1024 so every point really uses the mini-batch path
     (3*batch_size = 3072 < 1e4). The figure is saved to
-    image/scaling_performance.png (used in the README).
+    images/scaling_performance.png (used in the README).
     """
     import warnings
+    from time import perf_counter
     from sklearn.exceptions import ConvergenceWarning
 
     n_features = 2
@@ -425,65 +445,78 @@ def test_scaling_with_n_samples():
         ]
     }
 
-    n_iters = 10  # fixed iteration count: min_iter = max_iter = n_iters
-    n_repeats = 10  # mini-batch repeats per N: median + 16-84% spread
+    # Both paths use k-means initialisation and the same seed per pair. A
+    # fixed 10-iteration budget with random initialisation leaves EM on a
+    # degenerate plateau (both means near the sample centre), so the full and
+    # mini fits would be compared before either has found the real solution.
+    fit_options = dict(init_params='kmeans', batch_size=1024,
+                       min_iter=5, max_iter=2000, tol=1e-6)
+    n_repeats = 20
     n_list = np.logspace(4, 6, 10).astype(int)  # 1e4 .. 1e6, 10 points
-    per_iter_full, per_iter_mini_old = [], []
+    per_iter_full_all, per_iter_mini_old = [], []
     per_iter_mini_all = []  # (n_points, n_repeats) after collection
-    lb_full, lb_mini_all = [], []  # lb_mini_all: (n_points, n_repeats)
+    # Full-vs-mini model difference: posterior change after matching components.
+    diff_mean_all, diff_max_all, flip_all = [], [], []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", ConvergenceWarning)
         for n in n_list:
             X = generate_data(n, n_features, weights, means, precisions, covariance_type)
 
-            t0 = time()
-            m_full = GaussianMixture(n_components=2, init_params='random', batch_size=1024,
-                                     min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(X, use_mini_batch=False)
-            per_iter_full.append((time() - t0) / n_iters)
-            lb_full.append(m_full.lower_bound_)
-
-            # repeated mini-batch fits: median + 16-84% spread per N
-            mini_times, mini_lb = [], []
-            for _ in range(n_repeats):
-                t0 = time()
-                m_mini = GaussianMixture(n_components=2, init_params='random', batch_size=1024,
-                                         min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(X, use_mini_batch=True)
-                mini_times.append((time() - t0) / n_iters)
-                mini_lb.append(m_mini.lower_bound_)
+            full_times, mini_times = [], []
+            mini_diff_mean, mini_diff_max, mini_flip = [], [], []
+            for repeat in range(n_repeats + 1):
+                # Discard the warm-up pair and balance method order thereafter.
+                modes = (False, True) if repeat % 2 == 0 else (True, False)
+                models, timings = {}, {}
+                for mini in modes:
+                    t0 = perf_counter()
+                    model = GaussianMixture(n_components=2, random_state=repeat, **fit_options)
+                    model.fit(X, use_mini_batch=mini)
+                    timings[mini] = (perf_counter() - t0) / model.n_iter_
+                    models[mini] = model
+                if repeat == 0:
+                    continue
+                full_times.append(timings[False])
+                mini_times.append(timings[True])
+                mean_d, max_d, flip = _posterior_difference(
+                    models[False].predict_proba(X), models[True].predict_proba(X))
+                mini_diff_mean.append(mean_d)
+                mini_diff_max.append(max_d)
+                mini_flip.append(flip)
+            per_iter_full_all.append(full_times)
             per_iter_mini_all.append(mini_times)
-            lb_mini_all.append(mini_lb)
+            diff_mean_all.append(mini_diff_mean)
+            diff_max_all.append(mini_diff_max)
+            flip_all.append(mini_flip)
 
             # old path: full-dataset init + no-replacement permutation
             # (disabling both optimizations reproduces the pre-optimization cost)
-            t0 = time()
-            GaussianMixture(n_components=2, init_params='random', batch_size=1024,
-                            min_iter=n_iters, max_iter=n_iters, tol=1e-3).fit(
+            t0 = perf_counter()
+            old = GaussianMixture(n_components=2, random_state=0, **fit_options).fit(
                 X, use_mini_batch=True, _use_bounded_init=False,
                 _replace_sampling=False)
-            per_iter_mini_old.append((time() - t0) / n_iters)
+            per_iter_mini_old.append((perf_counter() - t0) / old.n_iter_)
 
-            print(f"  N={n:>8d}: full {per_iter_full[-1] * 1e3:7.1f} ms/iter | "
+            print(f"  N={n:>8d}: full(med) {np.median(full_times) * 1e3:7.2f} ms/iter "
+                  f"[{np.percentile(full_times, 16) * 1e3:.2f}-{np.percentile(full_times, 84) * 1e3:.2f}] | "
                   f"mini(med) {np.median(mini_times) * 1e3:7.2f} ms/iter "
                   f"[{np.percentile(mini_times, 16) * 1e3:.2f}-{np.percentile(mini_times, 84) * 1e3:.2f}] | "
+                  f"diff(mean|dP|) {np.median(mini_diff_mean):.2e} "
+                  f"max {max(mini_diff_max):.2e} | flip {np.median(mini_flip) * 100:.4f}% | "
                   f"mini(old) {per_iter_mini_old[-1] * 1e3:7.1f} ms/iter")
 
-    per_iter_full = np.array(per_iter_full)
+    per_iter_full = np.median(per_iter_full_all, axis=1)
+    per_iter_full_lo, per_iter_full_hi = np.percentile(per_iter_full_all, [16, 84], axis=1)
     per_iter_mini = np.array(per_iter_mini_all)  # (n_points, n_repeats)
     per_iter_mini_med = np.median(per_iter_mini, axis=1)
     per_iter_mini_lo = np.percentile(per_iter_mini, 16, axis=1)
     per_iter_mini_hi = np.percentile(per_iter_mini, 84, axis=1)
     per_iter_mini_old = np.array(per_iter_mini_old)
-    lb_full = np.array(lb_full)
-    lb_mini_all = np.array(lb_mini_all)  # (n_points, n_repeats)
-
-    # Bayes factor per repeat: BF = exp(LB_full - LB_mini) (the N cancels),
-    # then median + 16-84% spread. On the Jeffreys scale BF in [0.1, 10] is
-    # "no substantial evidence"; the measured BF ≈ 1 means the full- and
-    # mini-batch converged solutions are statistically indistinguishable.
-    bf_all = np.exp(lb_full[:, None] - lb_mini_all)
-    bf_med = np.median(bf_all, axis=1)
-    bf_lo = np.percentile(bf_all, 16, axis=1)
-    bf_hi = np.percentile(bf_all, 84, axis=1)
+    diff_mean_all = np.array(diff_mean_all)  # (n_points, n_repeats)
+    diff_med = np.median(diff_mean_all, axis=1)
+    diff_lo = np.percentile(diff_mean_all, 16, axis=1)
+    diff_hi = np.percentile(diff_mean_all, 84, axis=1)
+    flip_med = np.median(np.array(flip_all), axis=1)
 
     # per-iteration cost should scale up with N for full batch
     assert per_iter_full[-1] > per_iter_full[0], "full per-iter should grow with N"
@@ -492,6 +525,11 @@ def test_scaling_with_n_samples():
     # the bounded-subsample init must not be slower than the full-dataset init
     # at the largest N (it removes the O(N) init scan)
     assert per_iter_mini_med[-1] <= per_iter_mini_old[-1], "bounded init should not be slower"
+    # converged full and mini fits must classify identically: no particle may
+    # change side, and the typical assignment probability may move only in the
+    # numerical-noise range (boundary particles can still move individually).
+    assert flip_med.max() <= 1e-3, f"hard-label disagreement {flip_med.max():.2e}"
+    assert diff_med.max() < 1e-5, f"mean |dP| {diff_med.max():.2e} exceeds noise"
 
     # ---- figure: unified Nature-journal style (shared with visualize.py) ----
     # Font sizes are bumped up relative to NATURE_STYLE so they match the
@@ -506,23 +544,32 @@ def test_scaling_with_n_samples():
     }):
         fig, ax1 = plt.subplots(figsize=(6, 5))
         ax1.loglog(n_list, per_iter_full, 'b-o', linewidth=3, markersize=8, label='Full batch')
+        ax1.fill_between(n_list, per_iter_full_lo, per_iter_full_hi, color='b', alpha=0.2)
         ax1.loglog(n_list, per_iter_mini_med, 'r-o', linewidth=3, markersize=8, label='Mini batch')
         ax1.fill_between(n_list, per_iter_mini_lo, per_iter_mini_hi, color='r', alpha=0.2)
-        ax1.loglog(n_list, per_iter_mini_old, color='r', linestyle='--', marker='s', linewidth=2, markersize=7, alpha=0.7,
-                   label='Mini batch (old)')
+        # Ideal-scaling guides, anchored to the measured curves: O(N) through
+        # the smallest-N full-batch point, O(1) through the smallest-N
+        # mini-batch median.
+        guide_n = np.array([n_list[0], n_list[-1]])
+        ax1.loglog(guide_n, per_iter_full[0] * guide_n / n_list[0],
+                   color='0.35', linestyle='--', linewidth=1.2, label=r'$\mathcal{O}(N)$')
+        ax1.loglog(guide_n, np.full(guide_n.shape, per_iter_mini_med[0]),
+                   color='0.60', linestyle='--', linewidth=1.2, label=r'$\mathcal{O}(1)$')
         ax1.set_xlabel('N')
         ax1.set_ylabel('Time per iteration (s)')
 
-        # right axis: Bayes factor BF = exp(LB_full - LB_mini) of the full-
-        # vs mini-batch converged solutions (log scale; N cancels). ylim
-        # spans the Jeffreys "anecdotal" region [1/3, 3]: no evidence at
-        # BF = 1 (solid line), anecdotal at the 3 and 1/3 boundaries.
+        # right axis: full-vs-mini model difference, i.e. the mean absolute
+        # change in assignment probability per particle after matching the
+        # component order (log scale). This replaces the earlier
+        # exp(mean-log-likelihood difference) curve, which is ~1 by
+        # construction and not a decision statistic.
         ax2 = ax1.twinx()
-        ax2.semilogx(n_list, bf_med, 'g-^', linewidth=2, markersize=8, alpha=0.8, label='BF (median)')
-        ax2.fill_between(n_list, bf_lo, bf_hi, color='g', alpha=0.15)
-        ax2.set_ylabel('Bayes factor BF', color='g')
-        ax2.axhline(1.0, color='k', lw=1.0, ls='-', alpha=0.6)
-        ax2.set_ylim(1/3, 3)
+        ax2.semilogx(n_list, diff_med, 'g-^', linewidth=2, markersize=8, alpha=0.8,
+                     label=r'mean $|\Delta P|$')
+        ax2.fill_between(n_list, diff_lo, diff_hi, color='g', alpha=0.15)
+        ax2.set_ylabel(r'mean $|\Delta P|$', color='g')
+        ax2.set_yscale('log')
+        ax2.set_ylim(1e-9, 1e-3)
         ax2.tick_params(axis='y', labelcolor='g')
         ax2.grid(False)
 
@@ -531,10 +578,15 @@ def test_scaling_with_n_samples():
         h1, l1 = ax1.get_legend_handles_labels()
         h2, l2 = ax2.get_legend_handles_labels()
         ax1.legend(h1 + h2, l1 + l2, loc='lower center', bbox_to_anchor=(0.5, 1.02),
-                   ncol=4, fontsize=12, framealpha=0.9)
+                   ncol=3, fontsize=12, framealpha=0.9)
 
         fig.tight_layout()
-        fig.savefig("image/scaling_performance.png", dpi=150, bbox_inches='tight')
+        # Resolve against the repository root so the path works both under
+        # pytest and when this module is run directly.
+        from pathlib import Path
+        out_dir = Path(__file__).resolve().parents[1] / "images"
+        out_dir.mkdir(exist_ok=True)
+        fig.savefig(out_dir / "scaling_performance.png", dpi=150, bbox_inches="tight")
         plt.show()
 
 

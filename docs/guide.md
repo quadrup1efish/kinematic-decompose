@@ -220,7 +220,7 @@ Large samples support mini-batch updates. Initialization, final scoring and clas
 
 ![Mini-batch and full-batch iteration timings and fit diagnostic](../images/scaling_performance.png)
 
-The historical plot labels $\exp(\Delta\mathrm{LB})$ as `BF`, where LB is a per-sample mean log-likelihood diagnostic. This is not a Bayes factor obtained by integrating model evidence, and a value near one does not prove identical particle classifications. Timings are per iteration, not end-to-end pipeline speedups.
+The right axis is the actual difference between the two fits: the mean absolute change in per-particle assignment probability, after matching the component order. Both fits now run to convergence from the same k-means initialization; an earlier version stopped after ten iterations from random initialization, where neither run had found the real solution and the comparison was uninformative. With converged fits the mean change is about $10^{-7}$ and no particle changes its hard label, while individual particles on the decision boundary can still move substantially. Timings are per iteration, not end-to-end pipeline speedups.
 
 ![Batch-size measurements and parameter scans](../images/batch_size.png)
 
