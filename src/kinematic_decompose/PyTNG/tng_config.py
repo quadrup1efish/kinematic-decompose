@@ -294,7 +294,7 @@ def get_eps_mDM(properties) -> tuple[SimArray, SimArray]:
 enforce_dtype.py
 """
 def enforce_dtype(sim, dtype=PARTICLE_DTYPE):
-    """Uniformly cast every particle array on a pynbody snapshot to *dtype*.
+    """Uniformly cast floating particle arrays on a pynbody snapshot to *dtype*.
 
     pynbody stores arrays on the top-level SimSnap (``sim._arrays``) and
     views them per-family; casting there fixes all families at once.
@@ -309,7 +309,8 @@ def enforce_dtype(sim, dtype=PARTICLE_DTYPE):
     if arrays is None:
         return changed
     for name, arr in list(arrays.items()):
-        if arr.dtype != dtype:
+        # ParticleIDs can exceed the exact integer range of a float.
+        if arr.dtype.kind == 'f' and arr.dtype != dtype:
             arrays[name] = SimArray(arr.astype(dtype), units=arr.units, sim=sim)
             changed.append(name)
     return changed

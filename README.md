@@ -6,6 +6,8 @@
 
 An end-to-end IllustrisTNG pipeline: load a galaxy, construct its gravitational potential, calculate orbital features, fit an adaptive Gaussian mixture, and separate **bulge, stellar halo, cold disk, warm disk, and counter-rotating disk**.
 
+See [stellar-structure tracer history](docs/tracer-history.md) to follow material associated with those components back from a chosen seed snapshot.
+
 ![Galaxy decomposition: orbital-feature distributions and spatial maps of the five kinematic components](images/example_decomposition.png)
 
 *Example output. Top: fitted mixtures in orbital-feature space. Below: the total galaxy and its kinematic components. Open the image for full resolution.*
