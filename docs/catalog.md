@@ -14,7 +14,6 @@ counts = build_catalog(
     fresh=True,
 )
 ```
-
 Replace the example IDs and paths with your targets. By default, the example writes `TNG50-1_kinematic_catalog_flexible_ecut.h5` in the current directory. Pass `h5_path` explicitly to choose a different name or location; the parent directory must exist. Set `fresh=False` (the default) to resume; `fresh=True` refuses to replace an existing file. `overwrite=True` recomputes selected objects. `counts` is `(computed, skipped, errors)` for independent snapshots; the combined runner raises if a main branch is incomplete. `batch_compute` alone does not need a time converter. `run_traceback` handles one main branch. `build_tree(base_path, z0_targets, h5_path)` writes the optional tree table.
 
 The age callback is separate from stellar assembly. By default, each traceback computes origin IDs in memory using group catalog Header scale factors. To reuse existing results, pass `stellar_assembly_dir` to `build_catalog` or `run_traceback`. This reads `<z0_subfind_id>_stellar_assembly.pkl` from that directory without rewriting it. Only use trusted pickle files from the same simulation run. A missing cache raises an error rather than silently recomputing. Assembly data are obtained before the HDF5 completion check. Independent snapshot targets do not use this option.
