@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
+from pickle import UnpicklingError
 from uuid import uuid4
 
 import h5py
@@ -76,12 +77,15 @@ def build_catalog(base_path, h5_path=None, *, z0_targets=(), snapshot_targets=()
                 fresh_output=True,
                 potential_policy='rebuild_from_snapshot_star_gas_dm',
             )
+    trace_errors = 0
     for subfind_id in z0_targets:
         if not _run_traceback(base_path, int(subfind_id), h5_path,
                              snapnum_to_age=snapnum_to_age, overwrite=overwrite,
                              stellar_assembly_dir=stellar_assembly_dir,
-                             cooling_table_dir=cooling_table_dir):
-            raise RuntimeError(f'Traceback incomplete for z=0 SubfindID {subfind_id}')
+                             cooling_table_dir=cooling_table_dir, batch=True):
+            trace_errors += 1
+    if z0_targets:
+        print(f"  Traceback failures: {trace_errors}/{len(z0_targets)}", flush=True)
     return batch_compute(base_path, snapshot_targets, h5_path, overwrite=overwrite,
                          cooling_table_dir=cooling_table_dir)
 
@@ -91,6 +95,8 @@ def load_sorted_tree(basePath, subID):
                                fields=['SubfindID', 'SnapNum'],
                                onlyMPB=True, onlyMDB=False,
                                treeName="SubLink_gal", cache=False)
+    if tree is None:
+        return []
     pairs = [(sn, id_) for sn, id_ in zip(tree['SnapNum'], tree['SubfindID'])
              if sn in SNAPSHOTS]
     pairs.sort(key=lambda x: x[0])
@@ -106,23 +112,47 @@ def run_traceback(base_path, z0_subID, h5_path, *, overwrite=False,
                           cooling_table_dir=cooling_table_dir)
 
 
+def _record_traceback_failure(h5, z0_id, stage, error, *, snap=-1, subfind_id=-1):
+    reason = f'{stage}: {type(error).__name__}: {error}'.replace('\x00', r'\x00')
+    _set_traceback_complete(h5, 99, z0_id, False)
+    h5[f'99/{z0_id}'].attrs.update(_traceback_failed_snap=int(snap),
+                                   _traceback_failed_subfind_id=int(subfind_id),
+                                   _traceback_error=reason)
+    h5.flush()
+    print(f"  Traceback incomplete: z0_subID={z0_id}, snap={snap}, subID={subfind_id}: {reason}",
+          flush=True)
+    return False
+
+
 def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
-                   stellar_assembly_dir, cooling_table_dir):
+                   stellar_assembly_dir, cooling_table_dir, batch=False):
     basePath = str(base_path)
 
-    # Keep only this target's assembly in memory; failures occur before HDF5 writes.
+    # Keep only this target's assembly in memory.
     print(f"  [ASSEMBLY] z0_subID={z0_subID}", flush=True)
-    if stellar_assembly_dir is None:
-        iord_in, iord_ex = compute_stellar_assembly(basePath, int(z0_subID))
-    else:
-        iord_in, iord_ex = read_in_ex_situ(stellar_assembly_dir, z0_subID)
+    try:
+        if stellar_assembly_dir is None:
+            iord_in, iord_ex = compute_stellar_assembly(basePath, int(z0_subID))
+        else:
+            iord_in, iord_ex = read_in_ex_situ(stellar_assembly_dir, z0_subID)
+    except (OSError, ValueError, KeyError, EOFError, UnpicklingError) as error:
+        if not batch:
+            raise
+        with h5py.File(h5_path, 'a', libver='latest') as h5:
+            _check_catalog_schema(h5)
+            return _record_traceback_failure(h5, z0_subID, 'assembly', error)
 
     with h5py.File(h5_path, 'a', libver='latest') as h5:
         _check_catalog_schema(h5)
-        pairs = load_sorted_tree(basePath, z0_subID)
-        if not pairs:
-            print(f"  [z0_subID={z0_subID}] no valid snapshots in tree")
-            return False
+        try:
+            pairs = load_sorted_tree(basePath, z0_subID)
+        except (OSError, ValueError, IndexError, KeyError) as error:
+            if not batch:
+                raise
+            return _record_traceback_failure(h5, z0_subID, 'tree', error)
+        if not pairs or pairs[-1] != (99, z0_subID):
+            return _record_traceback_failure(h5, z0_subID, 'tree',
+                                             ValueError('no matching snap 99 endpoint'))
 
         # ── ★ 检查 z=0 snapshot 是否有 _traceback_complete 标记 ──
         z0_snapNum, z0_progenitorID = pairs[-1]   # 最后一个 = z=0
@@ -140,7 +170,11 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
             _repair_cached_catalogs(h5, z0_snapNum, z0_progenitorID, z0_grp)
             if cooling_table_dir is not None:
                 for snap, sid in pairs:
-                    _store_inner_cgm(h5[f'{snap}/{sid}'], basePath, snap, sid, cooling_table_dir)
+                    try:
+                        _store_inner_cgm(h5[f'{snap}/{sid}'], basePath, snap, sid, cooling_table_dir)
+                    except (KeyError, ValueError) as error:
+                        return _record_traceback_failure(h5, z0_subID, 'CGM', error,
+                                                         snap=snap, subfind_id=sid)
             print(f"  ✓ z0_subID={z0_subID}: trace-back already complete, skipping")
             return True
 
@@ -161,8 +195,6 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
         accum = init_accumulators()
         last_full = 0
 
-        success = True
-
         for i_pair, (snapNum, progenitorID) in enumerate(pairs):
             print(f"\n  --- snap {snapNum}, subID={progenitorID} "
                   f"({i_pair + 1}/{len(pairs)}) ---")
@@ -181,32 +213,30 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
                 _store_inner_cgm(grp, basePath, snapNum, progenitorID, cooling_table_dir,
                                  overwrite=overwrite)
 
-            except Exception as e:
-                print(f"\n  ✗ ERROR at snap {snapNum}, subID={progenitorID}: {e}")
-                import traceback
-                traceback.print_exc()
-                success = False
-                break    # 依赖链断裂，停止处理后续 snapshot
+            except (OSError, MemoryError):
+                # Snapshot processing shares the catalog writer; do not mask I/O failures.
+                raise
+            except Exception as error:
+                return _record_traceback_failure(h5, z0_subID, 'snapshot', error,
+                                                 snap=snapNum, subfind_id=progenitorID)
 
         # Publish chain completion only after final evolution and time writes.
-        if success:
-            z0_grp = h5.require_group(z0_key)
-            z0_grp.attrs['_traceback_snap_count'] = len(pairs)
-            evo_grp = z0_grp.require_group('evolution')
-            write_evolution_data(evo_grp, evo, structures)
+        z0_grp = h5.require_group(z0_key)
+        z0_grp.attrs['_traceback_snap_count'] = len(pairs)
+        evo_grp = z0_grp.require_group('evolution')
+        write_evolution_data(evo_grp, evo, structures)
 
         times_14 = np.array([snapnum_to_age(sn) for sn in SNAPSHOTS], dtype=np.float32)
         ds = h5.require_dataset('time_14', shape=times_14.shape, dtype=times_14.dtype)
         ds[...] = times_14
 
-        if success:
-            h5.flush()
-            _set_traceback_complete(h5, z0_snapNum, z0_progenitorID, True)
-            print(f"\n  ✓ z0_subID={z0_subID} complete! "
-                  f"({len(pairs)} snapshots)")
-        else:
-            print(f"\n  ⚠ z0_subID={z0_subID} incomplete, re-run to retry")
-        return success
+        for key in ('_traceback_failed_snap', '_traceback_failed_subfind_id', '_traceback_error'):
+            if key in z0_grp.attrs:
+                del z0_grp.attrs[key]
+        h5.flush()
+        _set_traceback_complete(h5, z0_snapNum, z0_progenitorID, True)
+        print(f"\n  ✓ z0_subID={z0_subID} complete! ({len(pairs)} snapshots)")
+        return True
 
 
 def build_tree(base_path, z0_subIDs, h5_path):

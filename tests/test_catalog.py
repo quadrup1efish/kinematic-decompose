@@ -177,6 +177,76 @@ def test_assembly_failure_does_not_create_catalog(monkeypatch, tmp_path):
     assert not path.exists()
 
 
+@pytest.mark.parametrize('failure_stage', ['assembly', 'tree', 'snapshot'])
+def test_batch_trace_failure_is_recorded_and_next_target_runs(monkeypatch, tmp_path,
+                                                               failure_stage):
+    path = tmp_path / 'catalog.h5'
+    calls = []
+    failing = True
+
+    def assembly(base, sid):
+        if failing and sid == 7 and failure_stage == 'assembly':
+            raise FileNotFoundError('missing cache')
+        return [], []
+
+    def tree(base, sid):
+        if failing and sid == 7 and failure_stage == 'tree':
+            return []
+        return [(21, sid + 100), (25, 207), (99, sid)] if sid == 7 else [(21, sid + 100), (99, sid)]
+
+    def store(h5, snap, sid, base, **kw):
+        calls.append((snap, sid))
+        if failing and sid == 207 and failure_stage == 'snapshot':
+            raise ValueError('bad particle data')
+        grp = h5.require_group(f'{snap}/{sid}')
+        grp.attrs.update(_method='trace', _stellar_mass=5., _n_particles=2)
+        structure = {'star': {'mass': 5.}}
+        _storage.write_snapshot_data(grp, structure)
+        grp.require_group('sfh')
+        _storage._commit_snapshot(h5, snap, sid, grp, structure)
+        return grp, True, 0
+
+    monkeypatch.setattr(catalog, '_snapshot_age_lookup', lambda _: float)
+    monkeypatch.setattr(catalog, 'compute_stellar_assembly', assembly)
+    monkeypatch.setattr(catalog, 'load_sorted_tree', tree)
+    monkeypatch.setattr(catalog, 'compute_and_store', store)
+    assert catalog.build_catalog('mock', path, z0_targets=[7, 8],
+                                 snapshot_targets=[(33, 9)]) == (1, 0, 0)
+    assert (99, 7) not in calls and calls[-3:] == [(21, 108), (99, 8), (33, 9)]
+    with h5py.File(path, 'r') as h5:
+        bad = h5['99/7'].attrs
+        assert not bad['_traceback_complete']
+        assert bad['_traceback_failed_snap'] == (25 if failure_stage == 'snapshot' else -1)
+        assert bad['_traceback_failed_subfind_id'] == (207 if failure_stage == 'snapshot' else -1)
+        assert str(bad['_traceback_error']).startswith(failure_stage + ':')
+        if failure_stage == 'snapshot':
+            assert h5['21/107'].attrs['_complete']
+        assert h5['99/8'].attrs['_traceback_complete']
+        assert h5['33/9'].attrs['_complete']
+
+    failing = False
+    assert catalog.build_catalog('mock', path, z0_targets=[7]) == (0, 0, 0)
+    with h5py.File(path, 'r') as h5:
+        assert h5['99/7'].attrs['_traceback_complete']
+        assert '_traceback_error' not in h5['99/7'].attrs
+
+
+def test_batch_trace_does_not_swallow_output_error(monkeypatch, tmp_path):
+    path = tmp_path / 'catalog.h5'
+    monkeypatch.setattr(catalog, 'compute_stellar_assembly', lambda *args: ([], []))
+    monkeypatch.setattr(catalog, 'load_sorted_tree', lambda base, sid: [(99, sid)])
+
+    def fail(*args, **kwargs):
+        raise OSError('write failed')
+
+    monkeypatch.setattr(catalog, 'compute_and_store', fail)
+    with pytest.raises(OSError, match='write failed'):
+        catalog.build_catalog('mock', path, z0_targets=[7, 8])
+    with h5py.File(path, 'r') as h5:
+        assert not h5['99/7'].attrs['_traceback_complete']
+        assert '99/8' not in h5
+
+
 def test_batch_routes_full_and_trace(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
