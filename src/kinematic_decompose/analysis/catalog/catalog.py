@@ -6,11 +6,14 @@ snapshots, and ``build_tree`` to write the optional tree table.
 
 import os
 from datetime import datetime, timezone
+from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
 import h5py
 import numpy as np
+from pynbody import units
+from scipy.integrate import quad
 
 from ...PyTNG import illustris_python as il
 from ..inner_cgm import LOCAL_COOLING_TABLE_DIR
@@ -25,14 +28,34 @@ from ._storage import (
 __all__ = ['build_catalog', 'run_traceback', 'batch_compute', 'build_tree', 'SNAPSHOTS']
 
 
+def _snapshot_age_lookup(base_path):
+    """Return a run-local cache of cosmic ages in Gyr, read from headers."""
+    base_path = str(base_path)
+    hubble_time = units.Unit('0.01 s Mpc km^-1').ratio('Gyr')
+
+    @cache
+    def age(snap):
+        if snap == 0:
+            return 0.0  # Start of the first assembly interval, not snapshot 0.
+        header = il.groupcat.loadHeader(base_path, snap)
+        matter = header['Omega0']
+        vacuum = header['OmegaLambda']
+        curvature = 1.0 - matter - vacuum
+        integral, _ = quad(lambda a: np.sqrt(a / (matter + curvature * a + vacuum * a**3)),
+                           0.0, header['Time'])
+        return integral * hubble_time / header['HubbleParam']
+
+    return age
+
+
 def build_catalog(base_path, h5_path=None, *, z0_targets=(), snapshot_targets=(),
-                  snapnum_to_age=None, overwrite=False, fresh=False, stellar_assembly_dir=None,
+                  overwrite=False, fresh=False, stellar_assembly_dir=None,
                   cooling_table_dir=None, compute_inner_cgm=False):
     """Process main branches, then independent snapshots. Return batch counts.
 
     With no h5_path, write <run>_kinematic_catalog_flexible_ecut.h5 in the
     current directory, deriving the run name from the snapshot path.
-    Pass the original snapshot-to-age (Gyr) callable for traceback targets.
+    Snapshot ages for traceback are derived from the simulation headers.
     Pass stellar_assembly_dir to read trusted legacy assembly pickles.
     Set compute_inner_cgm=True to use the local cooling tables, or pass an
     explicit cooling_table_dir to enable the diagnostic with custom tables.
@@ -44,8 +67,7 @@ def build_catalog(base_path, h5_path=None, *, z0_targets=(), snapshot_targets=()
     if compute_inner_cgm and cooling_table_dir is None:
         cooling_table_dir = LOCAL_COOLING_TABLE_DIR
     z0_targets = tuple(z0_targets)
-    if z0_targets and not callable(snapnum_to_age):
-        raise TypeError('snapnum_to_age is required for z=0 traceback targets')
+    snapnum_to_age = _snapshot_age_lookup(base_path) if z0_targets else None
     if fresh:
         with h5py.File(h5_path, 'x', libver='latest') as h5:
             h5.attrs.update(
@@ -55,7 +77,7 @@ def build_catalog(base_path, h5_path=None, *, z0_targets=(), snapshot_targets=()
                 potential_policy='rebuild_from_snapshot_star_gas_dm',
             )
     for subfind_id in z0_targets:
-        if not run_traceback(base_path, int(subfind_id), h5_path,
+        if not _run_traceback(base_path, int(subfind_id), h5_path,
                              snapnum_to_age=snapnum_to_age, overwrite=overwrite,
                              stellar_assembly_dir=stellar_assembly_dir,
                              cooling_table_dir=cooling_table_dir):
@@ -75,14 +97,17 @@ def load_sorted_tree(basePath, subID):
     return pairs
 
 
-def run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite=False,
+def run_traceback(base_path, z0_subID, h5_path, *, overwrite=False,
                   stellar_assembly_dir=None, cooling_table_dir=None):
-    """Decompose a z=0 main branch and record its evolution.
+    """Decompose a z=0 main branch, optionally using trusted assembly buckets."""
+    return _run_traceback(base_path, z0_subID, h5_path,
+                          snapnum_to_age=_snapshot_age_lookup(base_path), overwrite=overwrite,
+                          stellar_assembly_dir=stellar_assembly_dir,
+                          cooling_table_dir=cooling_table_dir)
 
-    Read trusted legacy assembly buckets if a directory is supplied;
-    otherwise compute them in memory. Missing caches are not recomputed
-    silently. The HDF5 completion check is unchanged.
-    """
+
+def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
+                   stellar_assembly_dir, cooling_table_dir):
     basePath = str(base_path)
 
     # Keep only this target's assembly in memory; failures occur before HDF5 writes.

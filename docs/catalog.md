@@ -1,22 +1,21 @@
 # Flexible skew-t catalog
 
-From a research script that has access to the original `tools.py`:
+From a research script:
 
 ```python
 from kinematic_decompose.analysis.catalog import build_catalog
-from tools import snapnum_to_age
 
 counts = build_catalog(
     '/data/TNG50-1/output',
     z0_targets=[433289],
     snapshot_targets=[(84, 1234), (99, 433289)],
-    snapnum_to_age=snapnum_to_age,
+    stellar_assembly_dir='/data/TNG50-1/stellar_assembly',
     fresh=True,
 )
 ```
-Replace the example IDs and paths with your targets. By default, the example writes `TNG50-1_kinematic_catalog_flexible_ecut.h5` in the current directory. Pass `h5_path` explicitly to choose a different name or location; the parent directory must exist. Set `fresh=False` (the default) to resume; `fresh=True` refuses to replace an existing file. `overwrite=True` recomputes selected objects. `counts` is `(computed, skipped, errors)` for independent snapshots; the combined runner raises if a main branch is incomplete. `batch_compute` alone does not need a time converter. `run_traceback` handles one main branch. `build_tree(base_path, z0_targets, h5_path)` writes the optional tree table.
+Replace the example IDs and paths with your targets. By default, the example writes `TNG50-1_kinematic_catalog_flexible_ecut.h5` in the current directory. Pass `h5_path` explicitly to choose a different name or location; the parent directory must exist. Set `fresh=False` (the default) to resume; `fresh=True` refuses to replace an existing file. `overwrite=True` recomputes selected objects. `counts` is `(computed, skipped, errors)` for independent snapshots; the combined runner raises if a main branch is incomplete. `run_traceback` handles one main branch. `build_tree(base_path, z0_targets, h5_path)` writes the optional tree table.
 
-The age callback is separate from stellar assembly. By default, each traceback computes origin IDs in memory using group catalog Header scale factors. To reuse existing results, pass `stellar_assembly_dir` to `build_catalog` or `run_traceback`. This reads `<z0_subfind_id>_stellar_assembly.pkl` from that directory without rewriting it. Only use trusted pickle files from the same simulation run. A missing cache raises an error rather than silently recomputing. Assembly data are obtained before the HDF5 completion check. Independent snapshot targets do not use this option.
+Traceback derives cosmic ages (Gyr) from the TNG group catalog headers and reuses them across targets in one call. By default, each traceback computes origin IDs in memory using group catalog Header scale factors. To reuse existing results, pass `stellar_assembly_dir` to `build_catalog` or `run_traceback`. This reads `<z0_subfind_id>_stellar_assembly.pkl` from that directory without rewriting it. Only use trusted pickle files from the same simulation run. A missing cache raises an error rather than silently recomputing. Assembly data are obtained before the HDF5 completion check. Independent snapshot targets do not use this option.
 
 ## Reading the implementation
 
