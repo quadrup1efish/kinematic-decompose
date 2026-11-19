@@ -43,6 +43,10 @@ def init_evolution_arrays(structures, n_snap):
     for s in ['colddisk', 'warmdisk', 'star']:
         evo[s]['AM'] = np.full((n_snap, 3), np.nan, dtype=np.float32)
     evo['warmdisk']['from_colddisk'] = np.full(n_snap, np.nan, dtype=np.float32)
+    evo['star']['formed_mass_fraction_source_snap'] = np.full(n_snap, -1, dtype=np.int32)
+    for s in structures:
+        if s != 'star':
+            evo[s]['formed_mass_fraction_backfill'] = np.full(n_snap, np.nan, dtype=np.float32)
     return evo
 
 
@@ -57,6 +61,7 @@ def init_accumulators():
         'sf_spheroid': [],
         'sf_disk': [],
         'ex_all': [],
+        'pending_formed_mass_backfill': [],
     }
 
 
@@ -178,6 +183,36 @@ def record_step(evo, galaxy, accum, idx, structures,
     return accum
 
 
+def _backfill_formed_mass_fractions(evo, galaxy, accum, structures, snap_num,
+                                    iord_in, snap_to_idx, snapnum_to_age):
+    """Use one full frame's in-situ cohort for each unresolved earlier frame."""
+    pending = accum['pending_formed_mass_backfill']
+    if not pending:
+        return
+    targets = [(snap_to_idx[snap], snapnum_to_age(snap)) for snap in pending]
+    pending.clear()
+    # This is an independent cohort selection, not the incremental SFR window.
+    in_situ = flatten_iord(iord_in, 0, snap_num + 1)
+
+    def formed_mass(obj):
+        selected = np.isin(obj['iord'], in_situ)
+        tform = obj['tform'][selected]
+        mass = obj['GFM_InitialMass'][selected]
+        return np.array([np.sum(mass[(tform > 0) & (tform <= age)], dtype=np.float64)
+                         for _, age in targets])
+
+    denominator = formed_mass(galaxy.star)
+    valid = np.isfinite(denominator) & (denominator > 0)
+    if not valid.any():
+        return
+    indices = np.array([idx for idx, _ in targets])[valid]
+    for s in structures:
+        if s != 'star':
+            numerator = formed_mass(getattr(galaxy, s))[valid]
+            evo[s]['formed_mass_fraction_backfill'][indices] = numerator / denominator[valid]
+    evo['star']['formed_mass_fraction_source_snap'][indices] = snap_num
+
+
 def _run_evolution_step(h5, data_grp, snap, galaxy, structure_dict,
                          evo, accum, evo_structures, i_pair, pairs,
                          iord_in, iord_ex, snap_to_idx, snapNum,
@@ -215,6 +250,8 @@ def _run_evolution_step(h5, data_grp, snap, galaxy, structure_dict,
                 snapNums_list=SNAPSHOTS,
                 iord_in=iord_in, snapnum_to_age=snapnum_to_age)
 
+    _backfill_formed_mass_fractions(evo, galaxy_faceon, accum, evo_structures,
+                                    snapNum, iord_in, snap_to_idx, snapnum_to_age)
     evo_grp = data_grp.require_group('evolution')
     write_evolution_data(evo_grp, evo, evo_structures)
 

@@ -134,7 +134,8 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
                 and _cached_payload_valid(z0_grp) \
                 and all(f'evolution/star/{key}' in z0_grp
                         and z0_grp[f'evolution/star/{key}'].shape == (N_SNAPS_TOTAL,)
-                        for key in ('mass', 'cumsum_sf', 'cumsum_ex_situ')) \
+                        for key in ('mass', 'cumsum_sf', 'cumsum_ex_situ',
+                                    'formed_mass_fraction_source_snap')) \
                 and 'time_14' in h5 and h5['time_14'].shape == (N_SNAPS_TOTAL,):
             _repair_cached_catalogs(h5, z0_snapNum, z0_progenitorID, z0_grp)
             if cooling_table_dir is not None:

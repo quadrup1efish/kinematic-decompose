@@ -295,6 +295,7 @@ def _trace_sfh(h5, data_grp, data_key, snapNum, subfindID,
             # Preserve trace-period accretion for later full decompositions.
             if accum is not None:
                 accum['ex_all'].extend(flat_ex.tolist())
+                accum['pending_formed_mass_backfill'].append(snapNum)
 
             sid = galaxy.s['iord']
             evo['star']['cumsum_sf'][idx] = galaxy.s['GFM_InitialMass'][

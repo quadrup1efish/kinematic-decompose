@@ -19,6 +19,8 @@ Traceback derives cosmic ages (Gyr) from the TNG group catalog headers and reuse
 
 Both main-branch tracing and independent targets use the 14-snapshot grid `(13, 17, 21, 25, 33, 40, 50, 59, 67, 72, 78, 84, 91, 99)`. New trace catalogs store the corresponding cosmic ages in `/time_14`; the SFH bin edges remain in `/time_140`. Use a new output file rather than appending to a 12-snapshot trace catalog. The existing 1,000-stellar-particle threshold still determines whether a snapshot gets a full decomposition or only a lightweight SFH.
 
+For a nonempty lightweight frame, the next full decomposition backfills `evolution/<component>/formed_mass_fraction_backfill`. At the earlier frame's cosmic age, it divides the initial mass formed by that age in the component by the initial mass formed by that age in all stars of the **same in-situ cohort** present in the full frame. Component labels come from that full frame, not from the earlier frame or from birth. Sum the cold and warm fractions for the disk. The arrays align with `/time_14`; `evolution/star/formed_mass_fraction_source_snap` records the reference snapshot (`-1` if not backfilled). Missing frames or frames without a usable later cohort stay `NaN`. This does not change snapshot `mass`, SFR, or `cumsum_sf`.
+
 ## Reading the implementation
 
 New snapshot entries also store `/<snap>/<subfind_id>/vmax` and `v200c` in km/s. `vmax` is TNG's `SubhaloVmax`; `v200c` is derived from `Group_M_Crit200` and the physical `Group_R_Crit200` of the parent FoF group identified by `SubhaloGrNr`. For satellites the denominator still refers to the parent FoF group. Compute the ratio from the two scalars; undefined values are stored as `NaN`. Existing completed entries are not backfilled on a cache hit.

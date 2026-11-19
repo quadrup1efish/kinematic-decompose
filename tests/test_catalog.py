@@ -123,6 +123,49 @@ def test_twelve_snapshot_catalog_is_not_modified(tmp_path):
         np.testing.assert_array_equal(h5['time_12'][:], np.arange(12))
 
 
+def test_backfills_formed_mass_fractions_without_changing_snapshot_mass(tmp_path):
+    from types import SimpleNamespace
+
+    from kinematic_decompose.analysis.catalog import _evolution as evolution
+
+    def stars(ids, ages, masses):
+        return dict(iord=np.array(ids), tform=np.array(ages), GFM_InitialMass=np.array(masses))
+
+    galaxy = SimpleNamespace(
+        star=stars([1, 2, 3, 4, 5], [.4, .8, 1.2, .3, .6], [2., 6., 5., 20., 2.]),
+        colddisk=stars([1, 3], [.4, 1.2], [2., 5.]),
+        warmdisk=stars([5], [.6], [2.]),
+        bulge=stars([2, 4], [.8, .3], [6., 20.]),
+    )
+    structures = ['star', 'bulge', 'halo', 'colddisk', 'warmdisk']
+    galaxy.halo = stars([], [], [])
+    evo = evolution.init_evolution_arrays(structures, 5)
+    evo['colddisk']['mass'][4] = 3.
+    accum = evolution.init_accumulators()
+    accum['pending_formed_mass_backfill'].extend([13, 17])
+    ages = {13: .6, 17: 1.}
+    slots = {13: 1, 17: 2}
+    iord_in = [[] for _ in range(26)]
+    iord_in[13] = [1, 5]
+    iord_in[17] = [2]
+    iord_in[25] = [3]
+    evolution._backfill_formed_mass_fractions(evo, galaxy, accum, structures, 25,
+                                              iord_in, slots, ages.__getitem__)
+    assert not accum['pending_formed_mass_backfill']
+    # A subsequent full frame must not replace the first available labels.
+    evolution._backfill_formed_mass_fractions(evo, galaxy, accum, structures, 33,
+                                              iord_in, slots, ages.__getitem__)
+    with h5py.File(tmp_path / 'history.h5', 'w') as h5:
+        _storage.write_evolution_data(h5, evo, structures)
+        np.testing.assert_allclose(h5['colddisk/formed_mass_fraction_backfill'][:],
+                                   [np.nan, .5, .2, np.nan, np.nan])
+        np.testing.assert_allclose(h5['warmdisk/formed_mass_fraction_backfill'][1:3], [.5, .2])
+        np.testing.assert_allclose(h5['bulge/formed_mass_fraction_backfill'][1:3], [0., .6])
+        np.testing.assert_array_equal(h5['star/formed_mass_fraction_source_snap'][:],
+                                      [-1, 25, 25, -1, -1])
+        np.testing.assert_allclose(h5['colddisk/mass'][:], [np.nan] * 4 + [3.])
+
+
 def test_assembly_failure_does_not_create_catalog(monkeypatch, tmp_path):
     def fail(*args):
         raise OSError('assembly unavailable')
