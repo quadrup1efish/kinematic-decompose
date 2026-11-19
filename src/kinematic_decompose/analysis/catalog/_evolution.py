@@ -24,6 +24,22 @@ def flatten_iord(iord_list, start, end):
                     dtype=np.int64)
 
 
+def assembly_window(iord_list, previous_snap, current_snap):
+    """Select buckets in (previous_snap, current_snap], including 0 at the start."""
+    return flatten_iord(iord_list, previous_snap + 1 if previous_snap else 0, current_snap + 1)
+
+
+def trace_sfh_edges(h5, snapnum_to_age):
+    """Preserve interior bins and extend the final edge to the endpoint age."""
+    if 'time_140' not in h5:
+        edges = np.linspace(0, 13.8, 138)
+        if snapnum_to_age is not None:
+            end = np.nextafter(np.float32(snapnum_to_age(99)), np.float32(np.inf))
+            edges[-1] = max(edges[-1], float(end))
+        h5.create_dataset('time_140', data=edges)
+    return h5['time_140'][:]
+
+
 def init_evolution_arrays(structures, n_snap):
     """初始化 evolution 累积数组"""
     evo = {}
@@ -87,7 +103,7 @@ def _find_prev_snap_in_pairs(pairs, current_i):
 def record_step(evo, galaxy, accum, idx, structures,
                 flat_iord_in_full, flat_iord_ex, last_snap,
                 flat_iord_in_incr=None,
-                snap_to_idx=None, snapNums_list=None, iord_in=None, *, snapnum_to_age):
+                snap_to_idx=None, snapNums_list=None, iord_in=None, *, snapnum_to_age, sfh_edges=None):
     """
     将一次完整的运动学分解结果写入 evo。
 
@@ -95,7 +111,7 @@ def record_step(evo, galaxy, accum, idx, structures,
     ----
     flat_iord_in_full : 自上次 full-decomp 以来所有 in-situ 恒星 ID
                         （用于组件 SFR / accum / cumsum_sf）
-    flat_iord_in_incr : 仅当前 [last_snap, snapNum) 区间的 in-situ ID
+    flat_iord_in_incr : 仅当前 (last_snap, snapNum] 区间的 in-situ ID
                         （用于 evo['star']['SFR']，避免与 trace 模式重复）
     last_snap :         前一个分析的 snapNum（用于 born 分类）
     """
@@ -143,9 +159,11 @@ def record_step(evo, galaxy, accum, idx, structures,
 
         # SFR: star 用增量区间，组件用全区间
         flat_for_sfr = flat_iord_in_incr if s == 'star' else flat_iord_in_full
-        _, sfr_s = get_sfr(
-            obj['GFM_InitialMass'][np.isin(sid, flat_for_sfr)],
-            obj['tform'][np.isin(sid, flat_for_sfr)])
+        selected = np.isin(sid, flat_for_sfr)
+        tform = obj['tform']
+        selected &= (tform > 0) & (tform < 14)  # Exclude the wind-particle sentinel.
+        _, sfr_s = get_sfr(obj['GFM_InitialMass'][selected], tform[selected],
+                           bins=137 if sfh_edges is None else sfh_edges)
         evo[s]['SFR'] = sfr_s if evo[s]['SFR'] is None else evo[s]['SFR'] + sfr_s
 
         # cumsum_sf / cumsum_ex_situ
@@ -163,7 +181,7 @@ def record_step(evo, galaxy, accum, idx, structures,
                 if np.isnan(evo[s]['cumsum_sf'][earlier_idx]):
                     earlier_snap = snapNums_list[earlier_idx]
                     if earlier_snap > 0:
-                        earlier_flat = flatten_iord(iord_in, 0, earlier_snap)
+                        earlier_flat = assembly_window(iord_in, 0, earlier_snap)
                         evo[s]['cumsum_sf'][earlier_idx] = \
                             obj['GFM_InitialMass'][
                                 np.isin(sid, pool) & np.isin(sid, earlier_flat)
@@ -192,7 +210,7 @@ def _backfill_formed_mass_fractions(evo, galaxy, accum, structures, snap_num,
     targets = [(snap_to_idx[snap], snapnum_to_age(snap)) for snap in pending]
     pending.clear()
     # This is an independent cohort selection, not the incremental SFR window.
-    in_situ = flatten_iord(iord_in, 0, snap_num + 1)
+    in_situ = assembly_window(iord_in, 0, snap_num)
 
     def formed_mass(obj):
         selected = np.isin(obj['iord'], in_situ)
@@ -235,30 +253,23 @@ def _run_evolution_step(h5, data_grp, snap, galaxy, structure_dict,
 
     # ★ 关键：flat_in_full = 自上次 full 分解以来的所有 in-situ 星
     #   第一个 full 分解时 last_full_decomp_snap=0 → 覆盖 [0:snapNum]
-    flat_in_full = flatten_iord(iord_in, last_full_decomp_snap, snapNum)
+    flat_in_full = assembly_window(iord_in, last_full_decomp_snap, snapNum)
 
     # flat_in_incr = 仅当前区间（用于 evo['star']['SFR']，避免重复）
     last_snap = _find_prev_snap_in_pairs(pairs, i_pair)
-    flat_in_incr = flatten_iord(iord_in, last_snap, snapNum)
+    flat_in_incr = assembly_window(iord_in, last_snap, snapNum)
 
-    flat_ex = flatten_iord(iord_ex, last_snap, snapNum)
+    flat_ex = assembly_window(iord_ex, last_snap, snapNum)
 
     record_step(evo, galaxy_faceon, accum, idx, evo_structures,
                 flat_in_full, flat_ex, last_snap,
                 flat_iord_in_incr=flat_in_incr,
                 snap_to_idx=snap_to_idx,
                 snapNums_list=SNAPSHOTS,
-                iord_in=iord_in, snapnum_to_age=snapnum_to_age)
+                iord_in=iord_in, snapnum_to_age=snapnum_to_age,
+                sfh_edges=trace_sfh_edges(h5, snapnum_to_age))
 
     _backfill_formed_mass_fractions(evo, galaxy_faceon, accum, evo_structures,
                                     snapNum, iord_in, snap_to_idx, snapnum_to_age)
     evo_grp = data_grp.require_group('evolution')
     write_evolution_data(evo_grp, evo, evo_structures)
-
-    # time_140（只写一次，取首次 full 分解时的完整 SFH 时间轴）
-    if 'time_140' not in h5:
-        sf_idx = np.isin(galaxy_faceon.s['iord'], flat_in_full)
-        t_bins, _ = get_sfr(
-            galaxy_faceon.s['GFM_InitialMass'][sf_idx],
-            galaxy_faceon.s['tform'][sf_idx])
-        h5.create_dataset('time_140', data=t_bins)

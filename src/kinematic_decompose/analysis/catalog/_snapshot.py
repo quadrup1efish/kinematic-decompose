@@ -13,7 +13,7 @@ from ..sfh import get_sfr
 from ..sfh_trace import EMPTY_STELLAR_TRACE, compute_sfh_trace
 from ..velocity_offset import G_KPC_KMS2_MSOL, baryonic_velocity_offset, particles_from_container
 from ._decomposition import save_structure_properties, train_auto_gaussian_mixture_model
-from ._evolution import _find_prev_snap_in_pairs, _run_evolution_step, flatten_iord
+from ._evolution import _find_prev_snap_in_pairs, _run_evolution_step, assembly_window, trace_sfh_edges
 from ._storage import (
     CGM_COLUMNS, _catalog_key_index,
     _cached_payload_valid, _clear_snapshot_payload, _commit_snapshot,
@@ -125,7 +125,7 @@ def compute_and_store(h5, snapNum, subfindID, basePath, *, overwrite=False,
             basePath, n_parts, overwrite,
             track_evolution, evo, accum, evo_structures,
             i_pair, pairs, iord_in, iord_ex, snap_to_idx,
-            last_full_decomp_snap=last_full_decomp_snap)
+            last_full_decomp_snap=last_full_decomp_snap, snapnum_to_age=snapnum_to_age)
 
 
 def _full_decompose(h5, data_grp, data_key, snapNum, subfindID,
@@ -226,13 +226,17 @@ def _trace_sfh(h5, data_grp, data_key, snapNum, subfindID,
                basePath, n_parts, overwrite,
                track_evolution, evo, accum, evo_structures,
                i_pair, pairs, iord_in, iord_ex, snap_to_idx,
-               last_full_decomp_snap=0):
+               last_full_decomp_snap=0, *, snapnum_to_age=None):
     """Trace SFH + evolution（仅贡献 star 级别，不分解组件）。
     返回 (data_grp, is_new, last_full_decomp_snap) — 不改变 last_full_decomp_snap。
     """
     _invalidate_snapshot(data_grp)
 
     result = compute_sfh_trace(basePath, snapNum, subfindID, include_gas=True)
+
+    if track_evolution and accum is not None and iord_ex is not None:
+        last_snap = _find_prev_snap_in_pairs(pairs, i_pair) if pairs is not None else 0
+        accum['ex_all'].extend(assembly_window(iord_ex, last_snap, snapNum).tolist())
 
     # 空星系
     if result[0] is EMPTY_STELLAR_TRACE:
@@ -287,14 +291,11 @@ def _trace_sfh(h5, data_grp, data_key, snapNum, subfindID,
             last_snap = _find_prev_snap_in_pairs(pairs, i_pair) if pairs is not None else 0
 
             # SFR: 增量区间 → 累加（后续 full 模式不再重复算这部分）
-            flat_in_incr = flatten_iord(iord_in, last_snap, snapNum)
+            flat_in_incr = assembly_window(iord_in, last_snap, snapNum)
             # cumsum_sf: 从时间 0 累计 → 赋值（不是增量！）
-            flat_in_cum = flatten_iord(iord_in, 0, snapNum)
-            flat_ex_cum = flatten_iord(iord_ex, 0, snapNum)
-            flat_ex = flatten_iord(iord_ex, last_snap, snapNum)
-            # Preserve trace-period accretion for later full decompositions.
+            flat_in_cum = assembly_window(iord_in, 0, snapNum)
+            flat_ex_cum = assembly_window(iord_ex, 0, snapNum)
             if accum is not None:
-                accum['ex_all'].extend(flat_ex.tolist())
                 accum['pending_formed_mass_backfill'].append(snapNum)
 
             sid = galaxy.s['iord']
@@ -303,9 +304,10 @@ def _trace_sfh(h5, data_grp, data_key, snapNum, subfindID,
             evo['star']['cumsum_ex_situ'][idx] = galaxy.s['mass'][
                 np.isin(sid, flat_ex_cum)].sum()
 
-            _, sfr_s = get_sfr(
-                galaxy.s['GFM_InitialMass'][np.isin(sid, flat_in_incr)],
-                galaxy.s['tform'][np.isin(sid, flat_in_incr)])
+            tform = galaxy.s['tform']
+            selected = np.isin(sid, flat_in_incr) & (tform > 0) & (tform < 14)
+            _, sfr_s = get_sfr(galaxy.s['GFM_InitialMass'][selected], tform[selected],
+                               bins=trace_sfh_edges(h5, snapnum_to_age))
             evo['star']['SFR'] = sfr_s if evo['star']['SFR'] is None \
                 else evo['star']['SFR'] + sfr_s
 
