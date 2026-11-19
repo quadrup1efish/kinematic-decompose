@@ -246,17 +246,34 @@ def calculate_kinematic_param(
     
     r_bins = np.logspace(np.log10(r_min), np.log10(r_max), 100)
     r_midpoints = 0.5 * (r_bins[:-1] + r_bins[1:])
-    
+
+    unique_energies, envelope_jc = circular_orbit_reference(
+        potential, r_midpoints, azimuth_samples=azimuth_samples)
+    particle_energies = particle_data['e']
+    log_jc = np.interp(
+        -np.log10(-particle_energies), -np.log10(-unique_energies),
+        np.log10(envelope_jc), left=np.log10(envelope_jc[0]),
+        right=np.log10(envelope_jc[-1]),
+    )
+    jc_values = 10**log_jc
+    jc_values = np.where(np.isnan(jc_values), envelope_jc[-1], jc_values)
+    particle_data['jc'] = SimArray(
+        jc_values, units=particle_data['pos'].units * particle_data['vel'].units)
+    return galaxy
+
+
+def circular_orbit_reference(potential, radii, *, azimuth_samples=8):
+    """Build the bound midplane (energy, circular angular momentum) grid."""
     # 4. Average the field before computing speeds; particle energies remain
     # those of the full potential. One sample reproduces the legacy x-axis.
     circular_potentials, radial_forces = _azimuthally_averaged_midplane(
-        potential, r_midpoints, azimuth_samples=azimuth_samples
+        potential, radii, azimuth_samples=azimuth_samples
     )
     circular_velocities = _circular_velocity_from_radial_force(
-        r_midpoints, radial_forces
+        radii, radial_forces
     )
     circular_energies = 0.5 * circular_velocities**2 + circular_potentials
-    circular_angular_momenta = r_midpoints * circular_velocities
+    circular_angular_momenta = radii * circular_velocities
     
     # 5. Interpolate circular angular momentum for particle energies
     # Drop non-finite grid points BEFORE building the envelope: np.interp
@@ -300,32 +317,4 @@ def calculate_kinematic_param(
     # Guard against L=0 grid points: log10(0) = -inf would poison the
     # interpolation, so floor the envelope at a small positive value
     # (angular momenta are non-negative: r * sqrt(r * F_r)).
-    envelope_jc = np.maximum(envelope_jc, np.finfo(float).eps)
-    
-    particle_energies = particle_data['e']
-    
-    # np.interp: piecewise-linear in log-log space, constant extrapolation at
-    # the ends. xp must be strictly increasing: log10(-E) decreases with E,
-    # so interpolate in -log10(-E) instead (interp1d sorted internally, but
-    # np.interp does not).
-    log_jc = np.interp(
-        -np.log10(-particle_energies),
-        -np.log10(-unique_energies),
-        np.log10(envelope_jc),
-        left=np.log10(envelope_jc[0]),
-        right=np.log10(envelope_jc[-1]),
-    )
-    jc_values = 10**log_jc
-    # unbound particles (e > 0) yield NaN in log10(-e); fall back to the
-    # outermost circular angular momentum (same guard as the original code).
-    # envelope_jc is guaranteed finite (finite grid points + eps floor), so
-    # the fallback value cannot reintroduce NaN.
-    jc_values = np.where(np.isnan(jc_values), envelope_jc[-1], jc_values)
-    
-    # 6. Store results
-    particle_data['jc'] = SimArray(
-        jc_values,
-        units=particle_data['pos'].units * particle_data['vel'].units
-    )
-    
-    return galaxy
+    return unique_energies, np.maximum(envelope_jc, np.finfo(float).eps)
