@@ -29,7 +29,7 @@ def test_catalog_backfills_inner_cgm_without_redecomposition(tmp_path, monkeypat
         assert f['21/78482/existing'][()] == 42
         grp = f['21/78482/inner_cgm']
         assert not list(grp)
-        assert 'catalog_v2' not in f
+        assert set(f) == {'21', 'catalog'}
         assert len(f['catalog']) == 1
         row = f['catalog'][0]
         assert row['tcool_Myr'] == 14.

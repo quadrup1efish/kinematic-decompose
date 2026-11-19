@@ -135,7 +135,7 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
                 and all(f'evolution/star/{key}' in z0_grp
                         and z0_grp[f'evolution/star/{key}'].shape == (N_SNAPS_TOTAL,)
                         for key in ('mass', 'cumsum_sf', 'cumsum_ex_situ')) \
-                and 'time_12' in h5 and h5['time_12'].shape == (N_SNAPS_TOTAL,):
+                and 'time_14' in h5 and h5['time_14'].shape == (N_SNAPS_TOTAL,):
             _repair_cached_catalogs(h5, z0_snapNum, z0_progenitorID, z0_grp)
             if cooling_table_dir is not None:
                 for snap, sid in pairs:
@@ -194,18 +194,9 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
             evo_grp = z0_grp.require_group('evolution')
             write_evolution_data(evo_grp, evo, structures)
 
-        # time_12
-        times_12 = np.array([snapnum_to_age(sn) for sn in SNAPSHOTS],
-                            dtype=np.float32)
-        if 'time_12' in h5:
-            ds = h5['time_12']
-            if ds.shape == times_12.shape and ds.dtype == times_12.dtype:
-                ds[...] = times_12
-            else:
-                del h5['time_12']
-                h5.create_dataset('time_12', data=times_12)
-        else:
-            h5.create_dataset('time_12', data=times_12)
+        times_14 = np.array([snapnum_to_age(sn) for sn in SNAPSHOTS], dtype=np.float32)
+        ds = h5.require_dataset('time_14', shape=times_14.shape, dtype=times_14.dtype)
+        ds[...] = times_14
 
         if success:
             h5.flush()
@@ -231,6 +222,7 @@ def build_tree(base_path, z0_subIDs, h5_path):
     arr = np.array(all_rows, dtype=TREE_DTYPE)
 
     with h5py.File(h5_path, 'a') as h5:
+        _check_catalog_schema(h5)
         if 'tree' in h5:
             del h5['tree']
         h5.create_dataset('tree', data=arr, chunks=True, compression='gzip')

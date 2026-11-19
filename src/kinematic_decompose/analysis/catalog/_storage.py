@@ -4,6 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
+import h5py
 import numpy as np
 
 
@@ -95,76 +96,26 @@ def write_evolution_data(evo_grp, evo_dict, structures):
                 _write_dataset(sg, k, v)
 
 
-def _replace_catalog_dataset(h5, name, rows, dtype):
-    """Replace a small index with recoverable staging, not a cross-table transaction."""
-    pending, previous = f'__{name}_pending', f'__{name}_previous'
-    if name not in h5 and previous in h5:
-        h5.move(previous, name)
-    if previous in h5:
-        del h5[previous]
-    if pending in h5:
-        del h5[pending]
-    options = {'compression': 'gzip'}
-    replacement = h5.create_dataset(pending, data=rows, dtype=dtype, maxshape=(None,),
-                                    chunks=True, **options)
-    if name in h5:
-        replacement.attrs.update(dict(h5[name].attrs))
-    h5.flush()
-    try:
-        if name in h5:
-            h5.move(name, previous)
-        h5.move(pending, name)
-        h5.flush()
-    except BaseException:
-        if name not in h5 and previous in h5:
-            h5.move(previous, name)
-        h5.flush()
-        raise
-    if previous in h5:
-        del h5[previous]
-    getattr(h5, '_catalog_row_indices', {}).pop(name, None)
-    return h5[name]
+def _ensure_catalog_dataset(h5):
+    if 'catalog' not in h5:
+        return h5.create_dataset('catalog', shape=(0,), dtype=CATALOG_DTYPE,
+                                 maxshape=(None,), chunks=True, compression='gzip')
+    return h5['catalog']
 
 
-def _ensure_catalog_dataset(h5, name, dtype):
-    """Upgrade legacy fixed-size/S4 indices without changing scientific columns."""
-    previous = f'__{name}_previous'
-    if name not in h5 and previous in h5:
-        h5.move(previous, name)
-    if name not in h5:
-        options = {'compression': 'gzip'}
-        return h5.create_dataset(name, shape=(0,), dtype=dtype, maxshape=(None,),
-                                 chunks=True, **options)
-    ds = h5[name]
-    if ds.dtype.names != dtype.names:
-        raise ValueError(f'{name}: unexpected fields; refusing a lossy migration')
-    if ds.dtype != dtype or ds.maxshape != (None,):
-        rows = ds[:].astype(dtype)
-        rows['method'][rows['method'] == b'trac'] = b'trace'
-        ds = _replace_catalog_dataset(h5, name, rows, dtype)
-    return ds
-
-
-def _catalog_key_index(h5, name, ds):
-    caches = getattr(h5, '_catalog_row_indices', None)
-    if caches is None:
-        caches = h5._catalog_row_indices = {}
-    cached = caches.get(name)
+def _catalog_key_index(h5, ds):
+    cached = getattr(h5, '_catalog_row_index', None)
     if cached is None or cached[0] != len(ds):
         keys = list(zip(ds['snapNum'][:].tolist(), ds['subfindID'][:].tolist()))
         indices = {key: i for i, key in enumerate(keys)}
         if len(indices) != len(keys):
-            raise ValueError(f'{name}: duplicate keys require explicit reconciliation')
-        cached = caches[name] = [len(ds), indices]
+            raise ValueError('/catalog: duplicate keys require explicit reconciliation')
+        cached = h5._catalog_row_index = [len(ds), indices]
     return cached
 
 
-def _store_catalog_row(h5, name, row, dtype):
-    ds = _ensure_catalog_dataset(h5, name, dtype)
-    row = np.array([row], dtype=dtype)[0]
-    if row['method'] == b'trac':
-        row['method'] = b'trace'
-    cached = _catalog_key_index(h5, name, ds)
+def _store_catalog_row(h5, ds, row):
+    cached = _catalog_key_index(h5, ds)
     key = (int(row['snapNum']), int(row['subfindID']))
     idx = cached[1].get(key)
     appended = idx is None
@@ -281,8 +232,8 @@ def _set_traceback_complete(h5, snapNum, subfindID, value):
     data_grp.attrs['_traceback_complete'] = False
     ds, index = None, None
     if 'catalog' in h5:
-        ds = _ensure_catalog_dataset(h5, 'catalog', CATALOG_DTYPE)
-        index = _catalog_key_index(h5, 'catalog', ds)[1].get((snapNum, subfindID))
+        ds = h5['catalog']
+        index = _catalog_key_index(h5, ds)[1].get((snapNum, subfindID))
     if value and index is None:
         raise ValueError('Cannot complete a traceback without its catalog row')
     try:
@@ -307,17 +258,19 @@ CGM_COLUMNS = ('tcool_Myr', 'tff_Myr', 'tcool_tff')
 
 
 def _check_catalog_schema(h5):
-    """Reject legacy files without modifying their contents."""
-    if (any(k in h5 for k in ('catalog_v2', '__catalog_v2_pending', '__catalog_v2_previous'))
-            or any(h5[k].dtype.names != CATALOG_DTYPE.names
-                   for k in ('catalog', '__catalog_previous') if k in h5)):
-        raise ValueError('Legacy catalog: use a new output path; no in-place migration')
+    """Only write files with the current catalog layout."""
+    roots = {'catalog', 'tree', 'time_14', 'time_140'}
+    ds = h5.get('catalog')
+    if (any(key not in roots and not key.isdecimal() for key in h5)
+            or (ds is not None and (not isinstance(ds, h5py.Dataset)
+                                    or ds.dtype != CATALOG_DTYPE or ds.maxshape != (None,)))):
+        raise ValueError('Unsupported catalog layout: use a new output path; no in-place migration')
 
 
 def _upsert_catalog(h5, snapNum, subfindID, data_grp, structure_dict):
     """Update the canonical summary without duplicating keys or CGM scalars."""
-    ds = _ensure_catalog_dataset(h5, 'catalog', CATALOG_DTYPE)
-    idx = _catalog_key_index(h5, 'catalog', ds)[1].get((snapNum, subfindID))
+    ds = _ensure_catalog_dataset(h5)
+    idx = _catalog_key_index(h5, ds)[1].get((snapNum, subfindID))
     row = np.zeros(1, dtype=CATALOG_DTYPE)[0]
     for name in CATALOG_DTYPE.names:
         if CATALOG_DTYPE[name].kind == 'f':
@@ -341,4 +294,4 @@ def _upsert_catalog(h5, snapNum, subfindID, data_grp, structure_dict):
         old = ds[idx]
         for name in CGM_COLUMNS:
             row[name] = old[name]
-    _store_catalog_row(h5, 'catalog', row, CATALOG_DTYPE)
+    _store_catalog_row(h5, ds, row)

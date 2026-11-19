@@ -29,7 +29,7 @@ def _store_inner_cgm(data_grp, base_path, snap, subfind_id, cooling_table_dir, *
     if cooling_table_dir is None:
         return
     ds = data_grp.file['catalog']
-    idx = _catalog_key_index(data_grp.file, 'catalog', ds)[1][snap, subfind_id]
+    idx = _catalog_key_index(data_grp.file, ds)[1][snap, subfind_id]
     row = ds[idx]
     if ('inner_cgm' in data_grp and not overwrite
             and all(np.isfinite(row[name]) for name in CGM_COLUMNS)):

@@ -8,17 +8,15 @@ from kinematic_decompose.analysis import catalog as public_catalog
 from kinematic_decompose.analysis.catalog import _snapshot, _storage, catalog
 
 
-def test_legacy_catalog_is_not_modified(tmp_path):
+def test_unsupported_summary_dtype_is_not_modified(tmp_path):
     path = tmp_path / 'legacy.h5'
     with h5py.File(path, 'w') as h5:
         h5['catalog'] = [1]
-        h5['catalog_v2'] = [2]
     with pytest.raises(ValueError, match='no in-place migration'):
         catalog.batch_compute('mock', [(99, 7)], path)
     with h5py.File(path, 'r') as h5:
-        assert set(h5) == {'catalog', 'catalog_v2'}
+        assert set(h5) == {'catalog'}
         np.testing.assert_array_equal(h5['catalog'][:], [1])
-        np.testing.assert_array_equal(h5['catalog_v2'][:], [2])
 
 
 def test_public_import():
@@ -95,14 +93,34 @@ def test_traceback_writes_existing_schema(monkeypatch, tmp_path, use_legacy_cach
                                  **options) == (0, 0, 0)
     with h5py.File(path) as h5:
         assert h5['catalog'].dtype == _storage.CATALOG_DTYPE
-        assert 'catalog_v2' not in h5
+        assert set(h5) == {'99', 'catalog', 'time_14'}
         assert h5['catalog'][0]['traceback_complete']
         assert h5['99/7'].attrs['_traceback_complete']
         assert h5['99/7/star/mass'][()] == 5
         expected = (2 / 3) * 9.77792 / .7 * (np.array(catalog.SNAPSHOTS) / 99)**1.5
-        np.testing.assert_allclose(h5['time_12'][:], expected, rtol=2e-5)
+        np.testing.assert_allclose(h5['time_14'][:], expected, rtol=2e-5)
         assert header_calls == list(catalog.SNAPSHOTS)
-        assert h5['99/7/evolution/star/AM'].shape == (12, 3)
+        assert h5['99/7/evolution/star/AM'].shape == (14, 3)
+
+
+def test_main_branch_includes_snapshots_13_and_17(monkeypatch):
+    monkeypatch.setattr(catalog.il.sublink, 'loadTree', lambda *a, **kw: {
+        'SnapNum': [99, 21, 17, 13, 12], 'SubfindID': [7, 8, 9, 10, 11],
+    })
+    assert catalog.load_sorted_tree('mock', 7) == [(13, 10), (17, 9), (21, 8), (99, 7)]
+
+
+def test_twelve_snapshot_catalog_is_not_modified(tmp_path):
+    path = tmp_path / 'old_grid.h5'
+    with h5py.File(path, 'w') as h5:
+        h5.create_dataset('catalog', shape=(0,), maxshape=(None,), dtype=_storage.CATALOG_DTYPE)
+        h5['time_12'] = np.arange(12)
+    with pytest.raises(ValueError, match='use a new output path'):
+        catalog.batch_compute('mock', [(13, 7)], path)
+    with h5py.File(path, 'r') as h5:
+        assert set(h5) == {'catalog', 'time_12'}
+        assert len(h5['catalog']) == 0
+        np.testing.assert_array_equal(h5['time_12'][:], np.arange(12))
 
 
 def test_assembly_failure_does_not_create_catalog(monkeypatch, tmp_path):
@@ -136,5 +154,6 @@ def test_batch_routes_full_and_trace(monkeypatch, tmp_path):
     monkeypatch.setattr(_snapshot, 'Snapshot', Snapshot)
     monkeypatch.setattr(_snapshot, '_full_decompose', branch('full'))
     monkeypatch.setattr(_snapshot, '_trace_sfh', branch('trace'))
-    assert catalog.batch_compute('mock', [(99, 7), (99, 8)], tmp_path / 'batch.h5') == (2, 0, 0)
+    assert catalog.batch_compute('mock', [(13, 7), (17, 8), (12, 7)],
+                                 tmp_path / 'batch.h5') == (2, 0, 0)
     assert calls == ['full', 'trace']

@@ -10,7 +10,7 @@ from ._storage import write_evolution_data
 
 _SNAP_PARAMS = ['krot', 'beta', 'r50', 'R50', 'z50', 't50',
                 'v_circ', 'v_rot', 'vel_disp', 'Mdyn', 'shape']
-SNAPSHOTS = (21, 25, 33, 40, 50, 59, 67, 72, 78, 84, 91, 99)
+SNAPSHOTS = (13, 17, 21, 25, 33, 40, 50, 59, 67, 72, 78, 84, 91, 99)
 N_SNAPS_TOTAL = len(SNAPSHOTS)
 
 
