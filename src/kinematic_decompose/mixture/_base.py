@@ -379,9 +379,8 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
         X = validate_data(self, X, dtype=[xp.float64, xp.float32], ensure_min_samples=2)
         n_samples, _ = X.shape
 
-        if sample_weight is None:
-            sample_weight = xp.ones(X.shape[0], dtype=X.dtype)
-        else:
+        # None already represents uniform weights in the E and M steps.
+        if sample_weight is not None:
             sample_weight = xp.asarray(sample_weight, dtype=X.dtype)
 
         if X.shape[0] < self.n_components:
@@ -479,7 +478,9 @@ class BaseMixture(DensityMixin, BaseEstimator, metaclass=ABCMeta):
                             batch_idx = self._perm[self._cursor:self._cursor + self.batch_size]
                             self._cursor += self.batch_size
                         mini_X = X[batch_idx]
-                        mini_sample_weight = sample_weight[batch_idx]
+                        mini_sample_weight = (
+                            None if sample_weight is None else sample_weight[batch_idx]
+                        )
 
                         log_prob_norm, log_resp = self._e_step(mini_X, mini_sample_weight, xp=xp)
                         self._m_step(mini_X, log_resp, sample_weight=mini_sample_weight, xp=xp)

@@ -367,6 +367,30 @@ def test_warm_start(monkeypatch):
     np.testing.assert_allclose(model.covariances_, continuation.covariances_, rtol=1e-10, atol=1e-12)
 
 
+@pytest.mark.parametrize('use_mini_batch', [False, True])
+def test_implicit_uniform_weights_match_explicit_ones(monkeypatch, use_mini_batch):
+    X = np.random.RandomState(7).normal(size=(512, 2))
+    options = dict(n_components=2, batch_size=64, init_params='kmeans',
+                   random_state=9, min_iter=40, max_iter=40)
+    expected = GaussianMixture(**options)
+    expected_labels = expected.fit_predict(X, sample_weight=np.ones(len(X)),
+                                           use_mini_batch=use_mini_batch)
+    actual = GaussianMixture(**options)
+    original_e_step = actual._e_step
+    observed = []
+
+    def check_e_step(X, sample_weight=None, xp=None):
+        observed.append((len(X), sample_weight is None))
+        return original_e_step(X, sample_weight, xp=xp)
+
+    monkeypatch.setattr(actual, '_e_step', check_e_step)
+    np.testing.assert_array_equal(actual.fit_predict(X, use_mini_batch=use_mini_batch),
+                                  expected_labels)
+    assert observed == [(64 if use_mini_batch else len(X), True)] * 40 + [(len(X), True)]
+    for name in ('weights_', 'means_', 'covariances_', 'lower_bounds_'):
+        np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+
+
 @pytest.mark.benchmark
 def test_scaling_with_n_samples():
     """Average per-iteration fit time vs n_samples for full vs mini batch.
