@@ -10,7 +10,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.colors import LogNorm
 import pytest
 from kinematic_decompose.mixture import GaussianMixture
-from kinematic_decompose.visualize import NATURE_STYLE
+from kinematic_decompose.visualization.decomposition import NATURE_STYLE
 from kinematic_decompose.mixture._base import BaseMixture, _drift_upper_bound, _hac_slope_se
 from kinematic_decompose.mixture import preprocessing, util
 from kinematic_decompose.mixture._auto_gaussian_mixture import (

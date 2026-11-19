@@ -11,7 +11,7 @@ import illustris_python as il
 
 from kinematic_decompose.config import BASEPATH
 from kinematic_decompose.PyTNG.snapshot_loader import Snapshot
-from kinematic_decompose.visualize import visualize_decomposition
+from kinematic_decompose.visualization.decomposition import visualize_decomposition
 from kinematic_decompose.mixture import AutoGaussianMixtureModel, util, preprocessing
 from kinematic_decompose.gravity.kinematic_solver import create_multipole_potential, calculate_kinematic_param
 

@@ -84,7 +84,7 @@ from kinematic_decompose.gravity.kinematic_solver import (
 )
 from kinematic_decompose.mixture import AutoGaussianMixtureModel, preprocessing, util
 from kinematic_decompose.config import BASEPATH
-from kinematic_decompose.visualize import visualize_decomposition
+from kinematic_decompose.visualization.decomposition import visualize_decomposition
 
 # 1. 从 TNG 加载星系
 snapshot = Snapshot(f"{BASEPATH}/TNG50-1/output", snapNum=99)

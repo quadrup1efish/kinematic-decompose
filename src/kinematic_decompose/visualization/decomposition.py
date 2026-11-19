@@ -1,3 +1,5 @@
+"""Render kinematic decomposition and its diagnostic panels."""
+
 import matplotlib
 import numpy as np
 from dataclasses import dataclass
