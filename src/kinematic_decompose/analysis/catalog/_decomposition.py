@@ -3,10 +3,10 @@
 import numpy as np
 
 from ...mixture import AutoGaussianMixtureModel, preprocessing, util
-from ...pipeline import DEFAULT_GMM_MAX_ITER, DEFAULT_GMM_MIN_ITER
+from ...pipeline import DEFAULT_GMM_MAX_ITER, DEFAULT_GMM_MIN_ITER, _potential_ecut_fallback
 
 
-def train_auto_gaussian_mixture_model(galaxy, jzojc_cut=0.5, *, eoemin_distribution=None):
+def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5, *, eoemin_distribution=None):
     """训练 AutoGMM 并返回 (X, best_model, eoemin_cut, jzojc_cut)"""
     X = np.column_stack([galaxy.s['eoemin'],
                          galaxy.s['jzojc'],
@@ -22,7 +22,9 @@ def train_auto_gaussian_mixture_model(galaxy, jzojc_cut=0.5, *, eoemin_distribut
         distribution=eoemin_distribution)
 
     if eoemin_cut is None:
-        raise ValueError("Skew-t ECUT is unavailable; no fallback is configured")
+        eoemin_cut = _potential_ecut_fallback(galaxy, pot)
+        if eoemin_distribution is not None:
+            eoemin_distribution['ecut_method'] = 'potential_1kpc_fallback'
 
     scaler = preprocessing.RobustScaler()
     X_train = scaler.fit_transform(X[keep])

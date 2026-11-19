@@ -86,6 +86,45 @@ def test_pipeline_uses_potential_fallback_when_skew_t_cut_is_none(monkeypatch):
     assert np.isfinite(cut)
 
 
+@pytest.mark.parametrize('fitted_cut, eps', [(None, .1), (None, .6), (-.45, .1)])
+def test_catalog_uses_legacy_1kpc_cut_only_when_fit_is_unavailable(monkeypatch, fitted_cut, eps):
+    from kinematic_decompose.analysis.catalog import _decomposition as catalog
+
+    mass = np.arange(1., 5.)
+    galaxy = SimpleNamespace(s={'eoemin': np.linspace(-.9, -.2, 4), 'e': np.full(4, -2.),
+                                'jzojc': np.zeros(4), 'jpojc': np.zeros(4), 'mass': mass},
+                             properties={'eps': eps})
+    sampled = []
+
+    def potential(points):
+        sampled.append(points.copy())
+        return -1. / (1. + points[:, 2])
+
+    class Model:
+        def fit(self, values, **kwargs):
+            np.testing.assert_array_equal(kwargs['sample_weight'], mass)
+            self.best_model = None
+            return self
+
+    monkeypatch.setattr(catalog.util, 'JEHistogram', lambda *a, **k: (np.ones(4, bool), None))
+    monkeypatch.setattr(catalog.util, 'get_Ecut_skewt', lambda *a, **k: fitted_cut)
+    monkeypatch.setattr(catalog, 'AutoGaussianMixtureModel', Model)
+    monkeypatch.setattr(catalog.preprocessing.RobustScaler, 'inverse_transform_GMM', lambda *a: None)
+    distribution = {}
+    _, _, cut, _ = catalog.train_auto_gaussian_mixture_model(
+        galaxy, SimpleNamespace(potential=potential), eoemin_distribution=distribution)
+    if fitted_cut is None:
+        grid = np.logspace(np.log10(2 * eps), 1., 100)
+        radius = grid[np.searchsorted(grid, max(1., 2 * eps))]
+        assert cut == pytest.approx(-1. / (2. * (1. + radius)))
+        assert len(sampled) == 1
+        assert distribution['ecut_method'] == 'potential_1kpc_fallback'
+    else:
+        assert cut == fitted_cut
+        assert sampled == []
+        assert 'ecut_method' not in distribution
+
+
 @pytest.fixture
 def cached_pipeline(monkeypatch):
     """Exercise real potential serialization with lightweight snapshot I/O."""

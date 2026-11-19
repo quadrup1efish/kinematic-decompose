@@ -14,6 +14,18 @@ from .config import BASEPATH, check_basepath
 DEFAULT_GMM_MAX_ITER = 500
 DEFAULT_GMM_MIN_ITER = 50
 
+def _potential_ecut_fallback(galaxy, pot):
+    """Use the legacy 1 kpc target on the softening-limited potential grid."""
+    r_min = 2.0 * float(galaxy.properties['eps'])
+    r_max = 10.0
+    if not 0.0 < r_min < r_max:
+        raise ValueError(f"Invalid energy-cut radius range [{r_min}, {r_max}] kpc")
+    radii = np.logspace(np.log10(r_min), np.log10(r_max), 100)
+    points = np.column_stack((radii * 0, radii * 0, radii))
+    radius = float(np.clip(1.0, r_min, r_max))
+    return pot.potential(points)[np.searchsorted(radii, radius)] / np.abs(galaxy.s['e'].min())
+
+
 def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
 
     eoemin_index = 0
@@ -27,19 +39,8 @@ def train_auto_gaussian_mixture_model(galaxy, pot, jzojc_cut=0.5):
         galaxy.s['eoemin'][keep_particle][sph],
         galaxy.s['mass'][keep_particle][sph],
     )
-    r_min = 2.0 * float(galaxy.properties['eps'])
-    r_max = 10.0
-    if not 0.0 < r_min < r_max:
-        raise ValueError(f"Invalid energy-cut radius range [{r_min}, {r_max}] kpc")
-    r = np.logspace(np.log10(r_min), np.log10(r_max), 100)
-    points = np.column_stack((r*0, r*0, r))
-    potential = pot.potential(points)
-    potential_eoemin = potential / np.abs(galaxy.s['e'].min())
-    #min_eoemin_cut = potential_eoemin[0]
-    #max_eoemin_cut = potential_eoemin[-1]
-    if (eoemin_cut is None or eoemin_cut == 0):# or max_eoemin_cut < eoemin_cut or eoemin_cut < min_eoemin_cut):
-        fallback_radius = float(np.clip(1, r_min, r_max))
-        eoemin_cut = potential_eoemin[np.searchsorted(r, fallback_radius)]
+    if eoemin_cut is None or eoemin_cut == 0:
+        eoemin_cut = _potential_ecut_fallback(galaxy, pot)
 
     scaler = preprocessing.RobustScaler()
     X_train= scaler.fit_transform(X[keep_particle])

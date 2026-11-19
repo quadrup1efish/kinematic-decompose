@@ -171,8 +171,8 @@ def _full_decompose(h5, data_grp, data_key, snapNum, subfindID,
         s_b = _measure_s_b(galaxy)
         eoemin_distribution = {}
         X, model, galaxy, eoemin_cut, jzojc_cut, pot = decompose_prepared_galaxy(
-            galaxy, trainer=lambda prepared, _: train_auto_gaussian_mixture_model(
-                prepared, eoemin_distribution=eoemin_distribution))
+            galaxy, trainer=lambda prepared, potential: train_auto_gaussian_mixture_model(
+                prepared, potential, eoemin_distribution=eoemin_distribution))
         structure_dict = save_structure_properties(galaxy)
         gmm_dict = util.decompose_mixture_model(model, eoemin_cut,
                                                 jzojc_cut, -jzojc_cut)
@@ -183,11 +183,11 @@ def _full_decompose(h5, data_grp, data_key, snapNum, subfindID,
     data_grp.attrs['_potential_source'] = 'rebuilt_star_gas_dm'
     data_grp['s_b'] = s_b
     _write_catalog_velocities(data_grp, basePath, snapNum, subfindID)
-    data_grp.attrs['_ecut_method'] = 'two_component_skew_t'
+    data_grp.attrs['_ecut_method'] = eoemin_distribution.get('ecut_method', 'two_component_skew_t')
     data_grp.attrs['_eoemin_cut'] = float(eoemin_cut)
     write_snapshot_data(data_grp, structure_dict)
     write_potential(data_grp, pot)
-    if eoemin_distribution:
+    if 'fit_density' in eoemin_distribution:
         dist = data_grp.create_group('eoemin_distribution')
         dist['fit_density'] = eoemin_distribution['fit_density']
         dist.attrs.update(first_center=eoemin_distribution['first_center'],
