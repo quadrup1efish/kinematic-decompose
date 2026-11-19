@@ -394,7 +394,7 @@ def _refine_skew_t_init(init, xc, density, split, de, lower, upper):
     return np.clip(init, lower, upper)
 
 
-def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
+def _fit_skew_t_with_params(eb, masses=None, d_min=1.0, *, distribution=None):
     """Fit two skew-t components and return ``(params, cut, separation)``.
 
     The unweighted density approximates a Gaussian KDE with the standard Scott
@@ -446,6 +446,8 @@ def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
         warnings.warn(f"Skew-t binned KDE failed: {exc}", RuntimeWarning, stacklevel=2)
         return None, None, None
     h_sm = h_sm / (h_sm.sum() * de)
+    if distribution is not None:
+        distribution.update(fit_density=h_sm, first_center=float(xc[0]), bin_width=float(de))
     sig = np.sqrt(h0 + 1.0) / (h0.sum() * de)
     sig = np.clip(sig, 1e-9, None)
 
@@ -540,7 +542,7 @@ def _fit_skew_t_with_params(eb, masses=None, d_min=1.0):
     return params, cut, separation
 
 
-def get_Ecut_skewt(eb, masses=None, d_min=1.0):
+def get_Ecut_skewt(eb, masses=None, d_min=1.0, *, distribution=None):
     """Return an ecut estimated from a two-component skew-t fit.
 
     The returned value is the fitted component-density crossing, unless the two
@@ -549,7 +551,8 @@ def get_Ecut_skewt(eb, masses=None, d_min=1.0):
     ``None`` when the sample is unusable or optimisation fails to converge, so
     the caller can apply its normal fallback. Optimisation failure emits a warning.
     """
-    _, cut, _ = _fit_skew_t_with_params(eb, masses=masses, d_min=d_min)
+    _, cut, _ = _fit_skew_t_with_params(eb, masses=masses, d_min=d_min,
+                                       distribution=distribution)
     return cut
 
 
@@ -619,6 +622,11 @@ def JEHistogram(E, eps, n_E=20, n_eps=30, seed=42):
 
     disk = ~sph
     return sph, disk
+
+
+# Names for selecting the particle labels assigned by decompose.
+STRUCTURES = {'cold_disk': (0,), 'warm_disk': (1,), 'disk': (0, 1),
+              'bulge': (2,), 'halo': (3,), 'counter_rotating_disk': (4,)}
 
 
 def decompose(X, galaxy, model, eoemin_cut, jzojc_cut, predict_method='soft',

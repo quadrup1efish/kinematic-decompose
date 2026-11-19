@@ -21,7 +21,13 @@ def test_get_ecut_skewt_returns_finite_boundary_for_two_component_sample():
     ])
     masses = np.ones(energies.size)
 
-    cut = util.get_Ecut_skewt(energies, masses)
+    distribution = {}
+    cut = util.get_Ecut_skewt(energies, masses, distribution=distribution)
+    assert set(distribution) == {'fit_density', 'first_center', 'bin_width'}
+    width = distribution['bin_width']
+    assert distribution['first_center'] == pytest.approx(energies.min() + width / 2)
+    assert distribution['fit_density'].sum() * width == pytest.approx(1.)
+    assert cut == util.get_Ecut_skewt(energies, masses)
 
     assert np.isfinite(cut)
     assert np.quantile(energies, 0.01) <= cut <= np.quantile(energies, 0.99)
