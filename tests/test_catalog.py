@@ -91,6 +91,13 @@ def test_traceback_writes_existing_schema(monkeypatch, tmp_path, use_legacy_cach
     monkeypatch.setattr(catalog.il.groupcat, 'loadHeader', header)
     assert catalog.build_catalog('mock', path, z0_targets=[7, 7],
                                  **options) == (0, 0, 0)
+
+    def unexpected_assembly(*args):
+        pytest.fail('A completed trace must not need stellar assembly')
+
+    monkeypatch.setattr(catalog, 'read_in_ex_situ', unexpected_assembly)
+    monkeypatch.setattr(catalog, 'compute_stellar_assembly', unexpected_assembly)
+    assert catalog.run_traceback('mock', 7, path, **options)
     with h5py.File(path) as h5:
         assert h5['catalog'].dtype == _storage.CATALOG_DTYPE
         assert set(h5) == {'99', 'catalog', 'time_14'}
@@ -166,15 +173,17 @@ def test_backfills_formed_mass_fractions_without_changing_snapshot_mass(tmp_path
         np.testing.assert_allclose(h5['colddisk/mass'][:], [np.nan] * 4 + [3.])
 
 
-def test_assembly_failure_does_not_create_catalog(monkeypatch, tmp_path):
+def test_direct_assembly_failure_does_not_write_catalog_payload(monkeypatch, tmp_path):
     def fail(*args):
         raise OSError('assembly unavailable')
 
     monkeypatch.setattr(catalog, 'compute_stellar_assembly', fail)
+    monkeypatch.setattr(catalog, 'load_sorted_tree', lambda *args: [(99, 7)])
     path = tmp_path / 'catalog.h5'
     with pytest.raises(OSError, match='assembly unavailable'):
         catalog.run_traceback('mock', 7, path)
-    assert not path.exists()
+    with h5py.File(path, 'r') as h5:
+        assert not list(h5)
 
 
 @pytest.mark.parametrize('failure_stage', ['assembly', 'tree', 'snapshot'])

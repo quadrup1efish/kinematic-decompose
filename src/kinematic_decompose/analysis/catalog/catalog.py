@@ -128,20 +128,6 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
                    stellar_assembly_dir, cooling_table_dir, batch=False):
     basePath = str(base_path)
 
-    # Keep only this target's assembly in memory.
-    print(f"  [ASSEMBLY] z0_subID={z0_subID}", flush=True)
-    try:
-        if stellar_assembly_dir is None:
-            iord_in, iord_ex = compute_stellar_assembly(basePath, int(z0_subID))
-        else:
-            iord_in, iord_ex = read_in_ex_situ(stellar_assembly_dir, z0_subID)
-    except (OSError, ValueError, KeyError, EOFError, UnpicklingError) as error:
-        if not batch:
-            raise
-        with h5py.File(h5_path, 'a', libver='latest') as h5:
-            _check_catalog_schema(h5)
-            return _record_traceback_failure(h5, z0_subID, 'assembly', error)
-
     with h5py.File(h5_path, 'a', libver='latest') as h5:
         _check_catalog_schema(h5)
         try:
@@ -177,6 +163,18 @@ def _run_traceback(base_path, z0_subID, h5_path, *, snapnum_to_age, overwrite,
                                                          snap=snap, subfind_id=sid)
             print(f"  ✓ z0_subID={z0_subID}: trace-back already complete, skipping")
             return True
+
+        # Only unfinished targets need to read or compute stellar assembly.
+        print(f"  [ASSEMBLY] z0_subID={z0_subID}", flush=True)
+        try:
+            if stellar_assembly_dir is None:
+                iord_in, iord_ex = compute_stellar_assembly(basePath, int(z0_subID))
+            else:
+                iord_in, iord_ex = read_in_ex_situ(stellar_assembly_dir, z0_subID)
+        except (OSError, ValueError, KeyError, EOFError, UnpicklingError) as error:
+            if not batch:
+                raise
+            return _record_traceback_failure(h5, z0_subID, 'assembly', error)
 
         _set_traceback_complete(h5, z0_snapNum, z0_progenitorID, False)
 
