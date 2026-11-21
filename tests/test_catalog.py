@@ -248,25 +248,25 @@ def test_batch_trace_does_not_swallow_output_error(monkeypatch, tmp_path):
 
 
 def test_batch_routes_full_and_trace(monkeypatch, tmp_path):
-    from types import SimpleNamespace
-
     calls = []
 
-    class Snapshot:
-        def __init__(self, base, snap):
-            self.s = SimpleNamespace()
+    def load_single(base, snap, *, subhaloID):
+        assert base == 'mock'
+        calls.append((snap, subhaloID))
+        return {'SubhaloLenType': [2000, 3000, 0, 0, 1000 if subhaloID == 7 else 999, 0]}
 
-        def load_particle(self, ID, **kwargs):
-            self.s = {'pos': range(1000 if ID == 7 else 999)}
+    def unexpected_snapshot(*args, **kwargs):
+        pytest.fail('Routing must not load snapshot particles')
 
     def branch(name):
         def process(*args, **kwargs):
             calls.append(name)
         return process
 
-    monkeypatch.setattr(_snapshot, 'Snapshot', Snapshot)
+    monkeypatch.setattr(_snapshot.groupcat, 'loadSingle', load_single)
+    monkeypatch.setattr(_snapshot, 'Snapshot', unexpected_snapshot)
     monkeypatch.setattr(_snapshot, '_full_decompose', branch('full'))
     monkeypatch.setattr(_snapshot, '_trace_sfh', branch('trace'))
     assert catalog.batch_compute('mock', [(13, 7), (17, 8), (12, 7)],
                                  tmp_path / 'batch.h5') == (2, 0, 0)
-    assert calls == ['full', 'trace']
+    assert calls == [(13, 7), 'full', (17, 8), 'trace']

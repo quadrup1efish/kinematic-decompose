@@ -102,11 +102,9 @@ def compute_and_store(h5, snapNum, subfindID, basePath, *, overwrite=False,
 
     _invalidate_snapshot(data_grp)
 
-    # 快速粒子数检查
-    snap_check = Snapshot(basePath, snapNum)
-    snap_check.load_particle(ID=subfindID, load_particle_fields='potential')
-    n_parts = len(snap_check.s['pos'])
-    del snap_check; gc.collect()
+    # Read the PartType4 count without loading snapshot particles.
+    subhalo = groupcat.loadSingle(basePath, snapNum, subhaloID=subfindID)
+    n_parts = int(subhalo['SubhaloLenType'][4])
     print(f"  {data_key}: n_particles={n_parts}")
 
     if n_parts >= N_DECOMPOSE:
