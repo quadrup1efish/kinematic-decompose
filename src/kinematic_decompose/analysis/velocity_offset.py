@@ -151,6 +151,46 @@ def particles_from_container(galaxy, species=('star', 'gas', 'dm')):
     return blocks
 
 
+def measure_streamed_dm_offset(galaxy, base_path, snap_num, subfind_id, *,
+                               block_size=262144):
+    """Measure s_b before rotation, reusing the centered DM coordinate array."""
+    from ..PyTNG.illustris_python import snapshot
+
+    baryons = baryonic_velocity_offset(particles_from_container(galaxy, ('star', 'gas')))
+    r90 = baryons['r90']
+    if not baryons['valid'] or not r90 > 0:
+        return np.nan
+    pos = galaxy.dm['pos']
+    if not len(pos):
+        return baryons['s_b']
+    subset = snapshot.getSnapOffsets(base_path, snap_num, subfind_id, 'Subhalo')
+    if int(subset['lenType'][1]) != len(pos):
+        raise ValueError('DM coordinates and snapshot member interval differ')
+    start = int(subset['offsetType'][1])
+    scale = np.sqrt(galaxy.properties['a'])
+    mass = _physical(galaxy.dm['mass'][:1], 'Msol')[0]
+    n20 = n90 = 0
+    velocity_sum = np.zeros(3)
+    for lo in range(0, len(pos), block_size):
+        hi = min(lo + block_size, len(pos))
+        radius = np.linalg.norm(_physical(pos[lo:hi], 'kpc'), axis=1)
+        inside = radius <= baryons['aperture']
+        count = np.count_nonzero(inside)
+        n90 += np.count_nonzero(radius <= r90)
+        if count:
+            subset['offsetType'][1] = start + lo
+            subset['lenType'][1] = hi - lo
+            vel = snapshot.loadSubset(base_path, snap_num, 'dm', ['Velocities'],
+                                      subset, float32=True)
+            velocity_sum += vel[inside].sum(axis=0, dtype=np.float64) * scale
+            n20 += count
+    mb = baryons['mass_total']
+    vb = baryons['v_baryon']
+    vt = (mb * vb + mass * velocity_sum) / (mb + n20 * mass)
+    vc = np.sqrt(G_KPC_KMS2_MSOL * (baryons['mass_enclosed_r90'] + n90 * mass) / r90)
+    return float(np.linalg.norm(vb - vt) / vc)
+
+
 def measure_baryon_velocity_offset(base_path, snap_num, subfind_id, *,
                                    aperture=20.0, circular_mass='r90',
                                    species=('star', 'gas', 'dm')):

@@ -12,6 +12,7 @@ from ..inner_cgm import measure_inner_cgm
 from ..sfh import get_sfr
 from ..sfh_trace import EMPTY_STELLAR_TRACE, compute_sfh_trace
 from ..velocity_offset import G_KPC_KMS2_MSOL, baryonic_velocity_offset, particles_from_container
+from ..velocity_offset import measure_streamed_dm_offset
 from ._decomposition import save_structure_properties, train_auto_gaussian_mixture_model
 from ._evolution import _find_prev_snap_in_pairs, _run_evolution_step, assembly_window, trace_sfh_edges
 from ._storage import (
@@ -144,12 +145,12 @@ def _full_decompose(h5, data_grp, data_key, snapNum, subfindID,
                  'ParticleIDs', 'GFM_StellarFormationTime',
                  'GFM_InitialMass'],
         "gas": ['Coordinates', 'Velocities', 'Masses'],
-        "dm": ['Coordinates', 'Velocities']})
+        "dm": ['Coordinates']})
     n_parts = len(snap.s['pos'])
     snap.physical_units()
     snap.load_group_catalog(ID=subfindID)
     snap.GC_physical_units()
-    snap.center(cen=snap.group_catalog['SubhaloPos'])
+
     # 二次检查：加载完整粒子后可能发现不足
     if n_parts < N_DECOMPOSE:
         #del snap, pot; gc.collect()
@@ -160,13 +161,25 @@ def _full_decompose(h5, data_grp, data_key, snapNum, subfindID,
                           i_pair, pairs, iord_in, iord_ex, snap_to_idx,
                           last_full_decomp_snap=last_full_decomp_snap)
 
+    snap.center(cen=snap.group_catalog['SubhaloPos'], with_velocity=False)
+    s_b = measure_streamed_dm_offset(snap.container, basePath, snapNum, subfindID)
+    # Preserve the standard stellar bulk frame without requiring a DM velocity array.
+    core = snap.s[snap.s['r'] < 2.0]
+    if len(core) < 5:
+        vcen = snap.group_catalog['SubhaloVel']
+    else:
+        vcen = (core['vel'].transpose() * core['mass']).sum(axis=1) / core['mass'].sum()
+    for family in (snap.s, snap.g):
+        if len(family):
+            family['vel'][:] -= np.asarray(vcen)
+
     # ── 分解 ──
     with snap.faceon(align_with='star',
                      range=[3 * snap.properties['eps'], 5 * snap.s.r50],
                      as_context=True):
         galaxy = snap.container
         print(f"  [POT] Building NEW stars+gas+DM potential: {data_key}", flush=True)
-        s_b = _measure_s_b(galaxy)
+
         eoemin_distribution = {}
         X, model, galaxy, eoemin_cut, jzojc_cut, pot = decompose_prepared_galaxy(
             galaxy, trainer=lambda prepared, potential: train_auto_gaussian_mixture_model(

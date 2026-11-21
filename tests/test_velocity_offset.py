@@ -21,6 +21,33 @@ def _particles(vel_offset=(0.0, 0.0, 0.0)):
     }
 
 
+def test_streamed_dm_matches_full_offset(monkeypatch):
+    from kinematic_decompose.PyTNG.illustris_python import snapshot
+
+    particles = _particles()
+    dm = particles['dm']
+    dm['pos'] = np.array([[0.5, 0, 0], [0, 0, 8], [25, 0, 0]])
+    dm['vel'] = np.array([[12., 4., 0.], [0., 50., 0.], [1000., 0., 0.]])
+    dm['mass'] = np.full(3, 9.5e11)
+    galaxy = SimpleNamespace(s=particles['star'], g=particles['gas'],
+                             dm={k: v for k, v in dm.items() if k != 'vel'},
+                             properties={'a': 0.25})
+    monkeypatch.setattr(snapshot, 'getSnapOffsets', lambda *args: {
+        'offsetType': np.array([0, 20]), 'lenType': np.array([0, 3])})
+    reads = []
+
+    def load(base, snap, family, fields, subset, *, float32):
+        assert family == 'dm' and fields == ['Velocities'] and float32
+        lo = subset['offsetType'][1] - 20
+        reads.append(lo)
+        return 2 * dm['vel'][lo:lo + subset['lenType'][1]]
+
+    monkeypatch.setattr(snapshot, 'loadSubset', load)
+    expected = vo.baryonic_velocity_offset(particles)['s_b']
+    assert vo.measure_streamed_dm_offset(galaxy, 'mock', 17, 7, block_size=1) == pytest.approx(expected)
+    assert reads == [0, 1]
+
+
 def test_velocity_offset_by_hand():
     result = vo.baryonic_velocity_offset(_particles())
     baryon_mass = 9.8e10 + 2e9 + 5e9
